@@ -108,6 +108,21 @@ real Docker daemon before considering it done, not just the mocked unit tests.**
 prove amao constructs the right command; they cannot prove that command actually works inside the
 target image as a non-root user. This project has real Docker available -- use it.
 
+3. **`apt-get install chromium chromium-driver` took ~14 minutes** on a bare `python:3.12-slim`
+   in this environment -- chromium pulls in a large transitive dependency tree (X11/GTK libs
+   etc.) that a "slim" base image has almost none of. Redoing that on every single test run (a
+   milestone can be retried `MAX_REVIEW_ATTEMPTS` times) would have made `PythonWebUIStrategy`
+   completely impractical -- this is not a "wait a bit longer" problem, it's a design-breaking one.
+   **Fixed by abandoning the "no custom image" default for this one strategy specifically**:
+   `src/amao/testing/docker/webui-tester.Dockerfile` pre-bakes Chromium + selenium into a
+   locally-tagged `amao-webui-tester:local` image; `image_builder.py` builds it once (checking
+   `docker image inspect` first) and every run after that is a normal `docker run` against an
+   already-built image -- confirmed end-to-end at **~32 seconds** total (including a separate
+   PytestStrategy run in the same pass) once the image existed, vs. 14+ minutes before. This is a
+   deliberate, narrow exception to decision #4, not a reversal of it -- Tier-1 strategies still use
+   plain official images with nothing to pre-build; only Selenium-based UI strategies get this
+   treatment, and only because the setup-cost asymmetry specifically demands it.
+
 ## Phase checklist
 
 ### Phase 0 — Design (this document)
@@ -161,23 +176,35 @@ target image as a non-root user. This project has real Docker available -- use i
 - [x] Update this file's checkboxes to match reality
 - [ ] Commit and push — don't let multiple phases pile up uncommitted (in progress; do this next)
 
-### Phase 3 — Tier-2 web UI strategies (NOT STARTED)
-- [ ] Detect a web app (Flask/Django/FastAPI/Node server, or static HTML) as a distinct signal
-      from "has tests" — a project can have a web UI with or without its own test suite
-- [ ] Selenium + Chromium strategy: official `selenium/standalone-chromium` image, launch the app
-      inside the sandbox, drive it with Selenium (navigate, check for elements described in the
-      milestone), capture a screenshot
-- [ ] Feed the screenshot to a vision-capable model as part of the Reviewer's evidence (OpenAI,
-      Anthropic, and Gemini backends all support image input already via their chat/messages
-      APIs — check what, if anything, `LLMBackend.complete()` needs to grow to pass an image
-      through; this may need a signature change, plan for it, don't bolt it on carelessly)
+### Phase 3 — Tier-2 web UI strategies (IN PROGRESS -- web UI done, BDD not started)
+- [x] Detect a web app (Django via `manage.py`, Flask/FastAPI via dependency-manifest text search,
+      or a bare static `index.html`) as a distinct signal from "has tests" -- `_detect_python_web_kind()`
+      in `strategies.py`. Node web apps not covered yet, see the note below.
+- [x] `PythonWebUIStrategy`: starts the detected app in the background, drives headless Chromium
+      via Selenium's Python bindings, verifies the page renders actual HTML, captures a screenshot.
+      **Not** the originally-planned `selenium/standalone-chromium` image -- see finding #3 above
+      for why a custom pre-built image was necessary instead. Verified end-to-end against a real
+      Flask app: homepage load + correct page title + valid screenshot file (pass case, ~32s warm),
+      and a crashing app correctly detected as a failure (~26s, bounded by the port-wait timeout).
+- [x] Screenshot fed to the Reviewer as vision evidence -- see the "Add vision support" work above
+      (`LLMBackend.complete(images=...)`, `ReviewerAgent.review_code(screenshots=...)`,
+      `Orchestrator` threading `outcome.screenshots` through). Done ahead of this phase since it
+      was a clean prerequisite to build and verify in isolation first.
+- [ ] **Node web apps** (Express/Next/etc., or built SPA output): not yet implemented. Would need
+      its own `NodeWebUIStrategy` using Node's `selenium-webdriver` bindings (not Python's) to
+      avoid mixing runtimes in one image, per decision #4 -- and its own pre-built image, per
+      finding #3, for the same chromium-install-cost reason. Structurally the same shape as
+      `PythonWebUIStrategy`; nobody has written or verified it yet.
 - [ ] BDD option, per the repo owner's explicit ask ("cucumber"): let the Tester (via an LLM call,
       same pattern as the other agents) generate a Gherkin `.feature` file from the milestone
       description, executed by `behave` for Python-target projects or `cucumber-js` for
       Node-target projects — scope to those two ecosystems first, don't attempt every Cucumber
-      flavor (Ruby/JVM) in one pass
-- [ ] Unit tests (mock Selenium/subprocess calls — real browser runs are integration-level, not
-      unit-level)
+      flavor (Ruby/JVM) in one pass. **Not started.**
+- [x] Unit tests for the web UI strategy (mocked -- detection logic, shell command construction,
+      `ensure_ready()` calling the image builder). Real-Docker verification was done directly via
+      Python one-liners during development (see finding #3), not yet turned into an automated,
+      opt-in "real Docker" test file the way Tier-1 strategies eventually should be too (Phase 4
+      CI task covers this).
 
 ### Phase 4 — Polish, docs, CI (NOT STARTED)
 - [ ] README: document `ENABLE_TESTER`, the strategy list, and the Docker prerequisite this adds

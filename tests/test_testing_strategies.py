@@ -1,10 +1,13 @@
 import json
 
+import pytest
+
 from amao.testing.strategies import (
     DEFAULT_STRATEGIES,
     GoTestStrategy,
     NpmTestStrategy,
     PytestStrategy,
+    PythonWebUIStrategy,
     detect_strategies,
 )
 
@@ -84,3 +87,84 @@ def test_detect_strategies_returns_nothing_for_an_unrecognized_project(tmp_path)
     (tmp_path / "README.md").write_text("just docs\n")
 
     assert detect_strategies(str(tmp_path), DEFAULT_STRATEGIES) == []
+
+
+def test_web_ui_strategy_detects_django_via_manage_py(tmp_path):
+    (tmp_path / "manage.py").write_text("# django\n")
+
+    assert PythonWebUIStrategy().detect(str(tmp_path)) is True
+
+
+def test_web_ui_strategy_detects_flask_via_requirements(tmp_path):
+    (tmp_path / "requirements.txt").write_text("Flask==3.0.0\n")
+
+    assert PythonWebUIStrategy().detect(str(tmp_path)) is True
+
+
+def test_web_ui_strategy_detects_fastapi_via_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi"]\n')
+
+    assert PythonWebUIStrategy().detect(str(tmp_path)) is True
+
+
+def test_web_ui_strategy_detects_bare_static_site(tmp_path):
+    (tmp_path / "index.html").write_text("<html></html>\n")
+
+    assert PythonWebUIStrategy().detect(str(tmp_path)) is True
+
+
+def test_web_ui_strategy_does_not_detect_a_plain_backend_only_project(tmp_path):
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
+
+    assert PythonWebUIStrategy().detect(str(tmp_path)) is False
+
+
+def test_web_ui_strategy_shell_command_uses_django_runserver(tmp_path):
+    (tmp_path / "manage.py").write_text("# django\n")
+
+    command = PythonWebUIStrategy().shell_command(str(tmp_path))
+
+    assert "manage.py runserver 0.0.0.0:8000" in command
+    # Chromium/selenium are pre-baked into the amao-webui-tester:local image
+    # (see ensure_ready()), not installed fresh on every run -- that was the
+    # ~14-minute-per-run problem this design replaced.
+    assert "apt-get" not in command
+    assert "pip install --quiet --no-input selenium" not in command
+
+
+def test_web_ui_strategy_shell_command_uses_http_server_for_static_sites(tmp_path):
+    (tmp_path / "index.html").write_text("<html></html>\n")
+
+    command = PythonWebUIStrategy().shell_command(str(tmp_path))
+
+    assert "python -m http.server 8000" in command
+    # No app dependencies to install for a bare static site.
+    assert "requirements.txt" not in command
+
+
+def test_web_ui_strategy_shell_command_raises_if_called_on_a_non_matching_project(tmp_path):
+    with pytest.raises(RuntimeError):
+        PythonWebUIStrategy().shell_command(str(tmp_path))
+
+
+def test_web_ui_strategy_is_included_in_default_strategies():
+    assert any(s.name == "web-ui-python" for s in DEFAULT_STRATEGIES)
+
+
+def test_web_ui_strategy_ensure_ready_builds_its_pinned_image(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "amao.testing.strategies.ensure_image_built",
+        lambda tag, dockerfile: calls.append((tag, dockerfile)),
+    )
+
+    PythonWebUIStrategy().ensure_ready()
+
+    assert calls == [("amao-webui-tester:local", "webui-tester.Dockerfile")]
+
+
+def test_tier_one_strategies_have_a_no_op_ensure_ready():
+    # Must not raise and must not need mocking -- there's nothing to build.
+    PytestStrategy().ensure_ready()
+    NpmTestStrategy().ensure_ready()
+    GoTestStrategy().ensure_ready()

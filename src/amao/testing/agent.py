@@ -7,6 +7,8 @@ infra problem (see DockerSandbox) raises.
 
 from __future__ import annotations
 
+import os
+
 from amao.testing.models import TestOutcome
 from amao.testing.sandbox import DockerSandbox
 from amao.testing.strategies import DEFAULT_STRATEGIES, TestStrategy, detect_strategies
@@ -37,9 +39,11 @@ class TesterAgent:
         names: list[str] = []
         summaries: list[str] = []
         outputs: list[str] = []
+        screenshots: list[str] = []
         for strategy in applicable:
+            strategy.ensure_ready()
             exit_code, output = self.sandbox.run(
-                project_dir, strategy.docker_image, strategy.shell_command()
+                project_dir, strategy.docker_image, strategy.shell_command(project_dir)
             )
             passed = exit_code == 0
             all_passed = all_passed and passed
@@ -48,6 +52,11 @@ class TesterAgent:
             summaries.append(f"{strategy.name}: {status}")
             outputs.append(f"--- {strategy.name} ---\n{output}")
 
+            if strategy.screenshot_relpath:
+                candidate = os.path.join(project_dir, strategy.screenshot_relpath)
+                if os.path.exists(candidate):
+                    screenshots.append(candidate)
+
         combined_output = "\n\n".join(outputs)[: self.max_output_chars]
         return TestOutcome(
             ran=True,
@@ -55,4 +64,5 @@ class TesterAgent:
             summary="; ".join(summaries),
             output=combined_output,
             strategy_names=tuple(names),
+            screenshots=tuple(screenshots),
         )

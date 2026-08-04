@@ -9,12 +9,16 @@ class _FakeStrategy(TestStrategy):
         self.name = name
         self.docker_image = docker_image
         self._detects = detects
+        self.ensure_ready_calls = 0
 
     def detect(self, project_dir):
         return self._detects
 
-    def shell_command(self):
+    def shell_command(self, project_dir):
         return f"run-{self.name}"
+
+    def ensure_ready(self):
+        self.ensure_ready_calls += 1
 
 
 def _sandbox_stub(results_by_command):
@@ -83,3 +87,38 @@ def test_output_is_capped_at_max_output_chars(tmp_path):
     outcome = tester.test_project(str(tmp_path))
 
     assert len(outcome.output) <= 50
+
+
+def test_screenshot_is_collected_when_the_strategy_produces_one(tmp_path):
+    (tmp_path / ".amao_screenshot.png").write_bytes(b"fake-png")
+    strategy = _FakeStrategy("web-ui-python", "python:3.12-slim")
+    strategy.screenshot_relpath = ".amao_screenshot.png"
+    sandbox = _sandbox_stub({"run-web-ui-python": (0, "UI_CHECK_OK")})
+    tester = TesterAgent(sandbox=sandbox, max_output_chars=1000, strategies=(strategy,))
+
+    outcome = tester.test_project(str(tmp_path))
+
+    assert outcome.screenshots == (str(tmp_path / ".amao_screenshot.png"),)
+
+
+def test_no_screenshot_collected_when_strategy_did_not_produce_one(tmp_path):
+    strategy = _FakeStrategy("web-ui-python", "python:3.12-slim")
+    strategy.screenshot_relpath = ".amao_screenshot.png"
+    sandbox = _sandbox_stub({"run-web-ui-python": (1, "ERROR: app did not start")})
+    tester = TesterAgent(sandbox=sandbox, max_output_chars=1000, strategies=(strategy,))
+
+    outcome = tester.test_project(str(tmp_path))
+
+    assert outcome.screenshots == ()
+
+
+def test_ensure_ready_is_called_once_per_applicable_strategy(tmp_path):
+    ready = _FakeStrategy("pytest", "python:3.12-slim")
+    not_applicable = _FakeStrategy("web-ui-python", "amao-webui-tester:local", detects=False)
+    sandbox = _sandbox_stub({"run-pytest": (0, "ok")})
+    tester = TesterAgent(sandbox=sandbox, max_output_chars=1000, strategies=(ready, not_applicable))
+
+    tester.test_project(str(tmp_path))
+
+    assert ready.ensure_ready_calls == 1
+    assert not_applicable.ensure_ready_calls == 0  # never run, never prepared
