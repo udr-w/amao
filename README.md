@@ -43,7 +43,9 @@ illustration. amao takes **any** natural-language goal. Here's the shape of usin
 of your own:
 
 ```bash
-# 1. Install
+# 1. Install (in a venv -- required on Debian/Ubuntu-family systems, see "Installation" below
+#    if `pip install` refuses with "externally-managed-environment")
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 # 2. Set at least one provider's key (see "Rewiring the agents" if you only want one vendor)
