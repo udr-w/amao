@@ -4,8 +4,9 @@
 "Current status" line and the phase checklists below for the next unchecked item. Say "resume
 tester agent work" and pick up from there.
 
-Current status: **Phases 0-2 + wiring done and verified (including a real, non-mocked Docker
-run). Phase 3 (web UI / Selenium / Cucumber) and Phase 4 (docs/CI polish) not started.**
+Current status: **Phases 0-2 + wiring done and verified -- all three Tier-1 strategies
+(pytest/npm/go) confirmed against a real, non-mocked Docker daemon, pass and fail cases each.
+Phase 3 (web UI / Selenium / Cucumber) and Phase 4 (docs/CI polish) not started.**
 
 ## Why this feature exists
 
@@ -135,9 +136,10 @@ target image as a non-root user. This project has real Docker available -- use i
       verified against a real Docker run (pass + fail cases). No PATH/permission issues: `npm
       install` (no `-g`) installs into the mounted project dir itself, which the host UID already
       owns, so the root-UID problem that hit pip didn't recur here.
-- [ ] `GoTestStrategy` (image `golang:1.24-bookworm`, detects via `go.mod`) -- pending real Docker
-      verification (image pull was still running when this checkpoint was written; picking up
-      immediately after). Don't mark this row done until that verification actually happens.
+- [x] `GoTestStrategy` (image `golang:1.24-bookworm`, detects via `go.mod`) -- verified against a
+      real Docker run (pass + fail cases). No ownership/PATH issues: the Go toolchain in this
+      image writes its build cache under the invoking user's own `$HOME` (which is `/tmp`, and
+      writable), and `go test` needs no separate install step the way pip/npm do.
 - [x] Unit tests per strategy (detection logic + command construction) --
       `tests/test_testing_strategies.py`
 
