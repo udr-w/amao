@@ -43,9 +43,8 @@ illustration. amao takes **any** natural-language goal. Here's the shape of usin
 of your own:
 
 ```bash
-# 1. Install (see "Installation" below if this fails on your system)
-./install.sh
-source .venv/bin/activate
+# 1. Install (see "Installation" below if this fails on your system, or you're on Windows)
+source install.sh
 
 # 2. Set at least one provider's key in .env (install.sh created it from .env.example)
 #    -- see "Rewiring the agents" if you only want one vendor
@@ -146,7 +145,8 @@ with a goal you actually care about.
 │       └── docker/webui-tester.Dockerfile
 ├── examples/demo_run.py     # Self-contained demo (CLI Task Manager app) -- one example, not the only use
 ├── tests/                   # pytest suite (mocked SDKs, real git in tmp dirs)
-├── install.sh               # venv + install + .env setup, handling common failure modes
+├── install.sh / uninstall.sh     # venv + install + .env setup, and its teardown (Linux/macOS)
+├── install.ps1 / uninstall.ps1   # same, for Windows -- see Installation's caveat
 ├── pyproject.toml
 ├── Dockerfile / .dockerignore
 └── .github/workflows/ci.yml
@@ -164,11 +164,33 @@ with a goal you actually care about.
 ### Installation
 
 Quickest path — one script handles the venv (including the two failure modes below), installs
-amao, and seeds `.env` from `.env.example` if you don't have one yet. Safe to re-run.
+amao, and seeds `.env` from `.env.example` if you don't have one yet. Safe to re-run, and
+uninstalls just as easily (`source uninstall.sh` / `.\uninstall.ps1`, see below).
+
+**Linux/macOS:**
 
 ```bash
-./install.sh
+source install.sh   # `source`, not `./` -- this is what lets it activate .venv for you too,
+                     # a script run as ./install.sh can't change its parent shell's environment
+                     # (a shell/OS-level rule, not an amao limitation). ./install.sh still works,
+                     # you'd just run `source .venv/bin/activate` yourself right after.
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+.\install.ps1
+```
+
+Run directly (not dot-sourced) — PowerShell's `$env:` variables aren't scoped the way bash's are,
+so this one does activate the venv in your session either way. If you get "running scripts is
+disabled on this system", that's Windows' script execution policy, unrelated to amao — run once:
+`Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`, then retry.
+**Caveat, stated plainly: the PowerShell scripts are written from correct knowledge of how
+venvs/`Activate.ps1`/`$env:` scoping work on Windows, but this project has no Windows machine to
+verify them against — unlike `install.sh`/`uninstall.sh`, which were tested end-to-end (happy path,
+the `uv` fallback, sourced vs. executed, idempotent re-runs) before being documented here. If
+something doesn't work as described, please open an issue.**
 
 Or by hand, if you'd rather see each step:
 
@@ -204,6 +226,11 @@ source .venv/bin/activate
 
 (No `uv`? Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh`, or via `pipx install
 uv` — see [astral.sh/uv](https://astral.sh/uv) for other methods.)
+
+**Uninstalling:** `source uninstall.sh` (Linux/macOS) or `.\uninstall.ps1` (Windows) removes
+`.venv` — that's the entirety of what gets installed, nothing touches system Python or anything
+outside this repo directory. `.env` is left in place by default since it may hold real API keys;
+pass `--with-env` (`-WithEnv` on Windows) to remove it too.
 
 ### Configuration
 

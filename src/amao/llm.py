@@ -239,11 +239,20 @@ def build_backend(
     if spec is None:
         raise ConfigError(f"Unknown provider {provider!r}; expected one of {sorted(PROVIDERS)}")
 
+    # max_retries=0 on both clients: with_retry_and_backoff() (rate_limiter.py)
+    # already retries rate-limit errors with its own backoff schedule. Leaving
+    # the SDK's own default retrying on top would silently multiply real HTTP
+    # requests per logical attempt (each SDK-level retry fires its own request
+    # before amao's wrapper ever sees the exception), making an already-rate-
+    # limited account's 429s worse, not better, and desyncing the "Attempt
+    # X/5" logging from the actual number of requests sent.
     api_key = api_keys.get(provider, "")
     if spec.kind == "anthropic":
-        return AnthropicBackend(anthropic.Anthropic(api_key=api_key, timeout=timeout), model=model)
+        return AnthropicBackend(
+            anthropic.Anthropic(api_key=api_key, timeout=timeout, max_retries=0), model=model
+        )
     return OpenAIBackend(
-        OpenAI(api_key=api_key, base_url=spec.base_url, timeout=timeout),
+        OpenAI(api_key=api_key, base_url=spec.base_url, timeout=timeout, max_retries=0),
         model=model,
         supports_cache_key=spec.supports_prompt_cache_key,
     )

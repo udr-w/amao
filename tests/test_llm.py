@@ -171,6 +171,10 @@ def test_build_backend_openai_supports_cache_key():
     assert backend.model == "gpt-4o"
     assert backend.supports_cache_key is True
     assert backend.client.api_key == "openai-key"
+    # max_retries=0: rate_limiter.with_retry_and_backoff() owns all retry
+    # behavior -- the SDK's own default retrying would multiply real HTTP
+    # requests per logical attempt on top of it (see llm.py's build_backend).
+    assert backend.client.max_retries == 0
 
 
 def test_build_backend_anthropic():
@@ -181,6 +185,7 @@ def test_build_backend_anthropic():
     assert isinstance(backend, AnthropicBackend)
     assert backend.model == "claude-3-7-sonnet-20250219"
     assert backend.client.api_key == "anthropic-key"
+    assert backend.client.max_retries == 0
 
 
 @pytest.mark.parametrize("provider", ["deepseek", "moonshot", "xai", "gemini"])
@@ -193,6 +198,7 @@ def test_build_backend_openai_compatible_providers(provider):
     assert backend.supports_cache_key is False  # not the real OpenAI endpoint
     assert str(backend.client.base_url).rstrip("/") == spec.base_url.rstrip("/")
     assert backend.client.api_key == _ALL_KEYS[provider]
+    assert backend.client.max_retries == 0
 
 
 def test_build_backend_rejects_unknown_provider():
