@@ -14,8 +14,13 @@ issue.
 ```bash
 git clone https://github.com/udr-w/amao.git
 cd amao
-pip install -e ".[dev]"
+./install.sh
+source .venv/bin/activate
 ```
+
+`install.sh` creates a `.venv` (falling back to `uv` if the stdlib `venv` module isn't usable on
+your system — see the README's Installation section for why that happens), installs amao with dev
+extras, and seeds `.env` from `.env.example`. Safe to re-run.
 
 Tests don't call any real API — OpenAI/Anthropic clients are mocked, so you don't need API keys
 to develop or run the test suite. `git_helper.py` tests do shell out to a real, local `git`

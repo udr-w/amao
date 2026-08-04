@@ -9,6 +9,29 @@ from amao.llm import PROVIDERS
 _ROLES = ("PLANNER", "EXECUTOR", "REVIEWER")
 
 
+def _load_dotenv(path: str = ".env") -> None:
+    # Hand-rolled rather than a new python-dotenv dependency -- the format
+    # needed (comments, blank lines, optional quoting) is a handful of lines.
+    # setdefault() so an already-exported real env var always wins over the
+    # file, matching standard dotenv semantics.
+    if not os.path.isfile(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv()
+
+
 @dataclass(frozen=True)
 class Config:
     OPENAI_API_KEY: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))

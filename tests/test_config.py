@@ -1,6 +1,8 @@
+import os
+
 import pytest
 
-from amao.config import Config
+from amao.config import Config, _load_dotenv
 from amao.exceptions import ConfigError
 
 
@@ -140,3 +142,50 @@ def test_api_keys_maps_every_provider_to_its_configured_key():
         "xai": "x",
         "gemini": "g",
     }
+
+
+def test_load_dotenv_sets_unset_vars_from_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("AMAO_TEST_DOTENV_VAR", raising=False)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("AMAO_TEST_DOTENV_VAR=from-file\n")
+
+    _load_dotenv(str(dotenv))
+
+    assert os.environ["AMAO_TEST_DOTENV_VAR"] == "from-file"
+    monkeypatch.delenv("AMAO_TEST_DOTENV_VAR", raising=False)
+
+
+def test_load_dotenv_does_not_override_an_already_set_env_var(tmp_path, monkeypatch):
+    monkeypatch.setenv("AMAO_TEST_DOTENV_VAR", "real-env-value")
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("AMAO_TEST_DOTENV_VAR=from-file\n")
+
+    _load_dotenv(str(dotenv))
+
+    assert os.environ["AMAO_TEST_DOTENV_VAR"] == "real-env-value"
+
+
+def test_load_dotenv_ignores_comments_and_blank_lines(tmp_path, monkeypatch):
+    monkeypatch.delenv("AMAO_TEST_DOTENV_VAR", raising=False)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("# a comment\n\nAMAO_TEST_DOTENV_VAR=value\n# trailing comment\n")
+
+    _load_dotenv(str(dotenv))
+
+    assert os.environ["AMAO_TEST_DOTENV_VAR"] == "value"
+    monkeypatch.delenv("AMAO_TEST_DOTENV_VAR", raising=False)
+
+
+def test_load_dotenv_strips_matching_quotes(tmp_path, monkeypatch):
+    monkeypatch.delenv("AMAO_TEST_DOTENV_VAR", raising=False)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text('AMAO_TEST_DOTENV_VAR="quoted value"\n')
+
+    _load_dotenv(str(dotenv))
+
+    assert os.environ["AMAO_TEST_DOTENV_VAR"] == "quoted value"
+    monkeypatch.delenv("AMAO_TEST_DOTENV_VAR", raising=False)
+
+
+def test_load_dotenv_missing_file_is_a_noop(tmp_path):
+    _load_dotenv(str(tmp_path / "does-not-exist.env"))  # must not raise

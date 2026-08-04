@@ -43,14 +43,13 @@ illustration. amao takes **any** natural-language goal. Here's the shape of usin
 of your own:
 
 ```bash
-# 1. Install (in a venv -- required on Debian/Ubuntu-family systems, see "Installation" below
-#    if `pip install` refuses with "externally-managed-environment")
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+# 1. Install (see "Installation" below if this fails on your system)
+./install.sh
+source .venv/bin/activate
 
-# 2. Set at least one provider's key (see "Rewiring the agents" if you only want one vendor)
-export OPENAI_API_KEY="sk-..."
-export ANTHROPIC_API_KEY="sk-ant-..."
+# 2. Set at least one provider's key in .env (install.sh created it from .env.example)
+#    -- see "Rewiring the agents" if you only want one vendor
+$EDITOR .env
 
 # 3. Point it at a fresh directory and describe what you want -- in your own words
 amao run --dir ./my-idea --goal "Build a CLI habit tracker in Python: log a habit as done for
@@ -147,6 +146,7 @@ with a goal you actually care about.
 │       └── docker/webui-tester.Dockerfile
 ├── examples/demo_run.py     # Self-contained demo (CLI Task Manager app) -- one example, not the only use
 ├── tests/                   # pytest suite (mocked SDKs, real git in tmp dirs)
+├── install.sh               # venv + install + .env setup, handling common failure modes
 ├── pyproject.toml
 ├── Dockerfile / .dockerignore
 └── .github/workflows/ci.yml
@@ -162,6 +162,15 @@ with a goal you actually care about.
   (see [Automated testing](#automated-testing-the-tester-agent))
 
 ### Installation
+
+Quickest path — one script handles the venv (including the two failure modes below), installs
+amao, and seeds `.env` from `.env.example` if you don't have one yet. Safe to re-run.
+
+```bash
+./install.sh
+```
+
+Or by hand, if you'd rather see each step:
 
 ```bash
 pip install -e ".[dev]"
@@ -198,14 +207,18 @@ uv` — see [astral.sh/uv](https://astral.sh/uv) for other methods.)
 
 ### Configuration
 
-Copy `.env.example` to `.env` and fill in real values (never commit `.env`), or export the
-variables directly:
+Copy `.env.example` to `.env` and fill in real values (`install.sh` already did this for you if you
+used it) — amao loads `.env` from the directory you run it in automatically at startup, no
+`export` required:
 
 ```bash
-export OPENAI_API_KEY="your-openai-api-key"
-export ANTHROPIC_API_KEY="your-anthropic-api-key"
-export NOTIFIER_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"  # optional, HTTPS only
+OPENAI_API_KEY=your-openai-api-key
+ANTHROPIC_API_KEY=your-anthropic-api-key
+NOTIFIER_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL  # optional, HTTPS only
 ```
+
+Never commit `.env` (it's already gitignored). Exporting real environment variables works too and
+always takes precedence over whatever's in `.env`, so CI/Docker/`-e VAR` setups are unaffected.
 
 `Config.validate()` is called on every `Orchestrator` construction (CLI, demo, or programmatic
 use) and fails fast with a clear error if a key required by your chosen providers is missing —
