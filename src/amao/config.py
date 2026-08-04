@@ -42,6 +42,14 @@ class Config:
     MAX_TEST_OUTPUT_CHARS: int = field(
         default_factory=lambda: int(os.getenv("MAX_TEST_OUTPUT_CHARS", "20000"))
     )
+    # A separate, narrower opt-in on top of ENABLE_TESTER: generates a
+    # Gherkin/behave UI scenario from the milestone description via an extra
+    # LLM call. Inert if ENABLE_TESTER is false regardless of this setting --
+    # the whole Tester stage is skipped in that case. Off by default: this is
+    # the least proven layer of the Tester (see TESTER_AGENT_PLAN.md).
+    ENABLE_BDD: bool = field(
+        default_factory=lambda: os.getenv("ENABLE_BDD", "false").lower() == "true"
+    )
 
     DB_FILENAME: str = "orchestrator_state.db"
 

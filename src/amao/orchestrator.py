@@ -12,6 +12,7 @@ from amao.models import Milestone, MilestoneStatus
 from amao.notifier import Notifier
 from amao.state_manager import StateManager
 from amao.testing.agent import TesterAgent
+from amao.testing.bdd import BehaveBDDStrategy, GherkinGenerator
 from amao.testing.sandbox import DockerSandbox
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,12 @@ class Orchestrator:
         self.tester = tester or TesterAgent(
             sandbox=DockerSandbox(timeout=config.TESTER_TIMEOUT_SECONDS),
             max_output_chars=config.MAX_TEST_OUTPUT_CHARS,
+            # Reuses the Planner's backend rather than provisioning a whole
+            # separate role/provider config just for Gherkin generation --
+            # translating a milestone description into constrained structured
+            # output is the same kind of task the Planner already does.
+            gherkin_generator=GherkinGenerator(self.planner.backend) if config.ENABLE_BDD else None,
+            bdd_strategy=BehaveBDDStrategy() if config.ENABLE_BDD else None,
         )
 
     def run(self) -> None:
@@ -158,7 +165,7 @@ class Orchestrator:
             screenshots: tuple[str, ...] = ()
             if config.ENABLE_TESTER:
                 logger.info("Running automated tests...")
-                outcome = self.tester.test_project(self.project_dir)
+                outcome = self.tester.test_project(self.project_dir, milestone=task)
                 self.state.log(
                     task.id,
                     "TEST_COMPLETED",

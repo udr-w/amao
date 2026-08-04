@@ -1,6 +1,8 @@
 from unittest.mock import MagicMock
 
+from amao.models import Milestone, MilestoneStatus
 from amao.testing.agent import TesterAgent
+from amao.testing.bdd import BehaveBDDStrategy
 from amao.testing.strategies import TestStrategy
 
 
@@ -122,3 +124,105 @@ def test_ensure_ready_is_called_once_per_applicable_strategy(tmp_path):
 
     assert ready.ensure_ready_calls == 1
     assert not_applicable.ensure_ready_calls == 0  # never run, never prepared
+
+
+class _FakeGherkinGenerator:
+    def __init__(self, scenario="Feature: x\nScenario: y\nGiven I visit the homepage\n"):
+        self.scenario = scenario
+        self.calls = []
+
+    def generate(self, milestone):
+        self.calls.append(milestone)
+        return self.scenario
+
+
+def _django_milestone():
+    return Milestone(
+        id=1,
+        title="Add login",
+        description="A login button appears",
+        status=MilestoneStatus.PENDING,
+        attempts=0,
+        last_error=None,
+    )
+
+
+def test_bdd_scenario_generated_and_run_when_web_app_and_milestone_present(tmp_path):
+    (tmp_path / "manage.py").write_text("# django\n")
+    generator = _FakeGherkinGenerator()
+    bdd_strategy = BehaveBDDStrategy()
+    # shell_command's exact text depends on the scenario, so set it the same
+    # way test_project() will before computing the expected command here.
+    bdd_strategy.set_scenario(generator.scenario)
+    sandbox = _sandbox_stub({bdd_strategy.shell_command(str(tmp_path)): (0, "1 scenario passed")})
+    tester = TesterAgent(
+        sandbox=sandbox,
+        max_output_chars=1000,
+        strategies=(),
+        gherkin_generator=generator,
+        bdd_strategy=bdd_strategy,
+    )
+
+    outcome = tester.test_project(str(tmp_path), milestone=_django_milestone())
+
+    assert generator.calls == [_django_milestone()]
+    assert outcome.ran is True
+    assert outcome.passed is True
+    assert "bdd-behave" in outcome.strategy_names
+
+
+def test_bdd_scenario_not_generated_without_a_web_app(tmp_path):
+    generator = _FakeGherkinGenerator()
+    bdd_strategy = BehaveBDDStrategy()
+    tester = TesterAgent(
+        sandbox=MagicMock(),
+        max_output_chars=1000,
+        strategies=(),
+        gherkin_generator=generator,
+        bdd_strategy=bdd_strategy,
+    )
+
+    outcome = tester.test_project(str(tmp_path), milestone=_django_milestone())
+
+    assert generator.calls == []
+    assert outcome.ran is False
+
+
+def test_bdd_scenario_not_generated_without_a_milestone(tmp_path):
+    (tmp_path / "manage.py").write_text("# django\n")
+    generator = _FakeGherkinGenerator()
+    bdd_strategy = BehaveBDDStrategy()
+    tester = TesterAgent(
+        sandbox=MagicMock(),
+        max_output_chars=1000,
+        strategies=(),
+        gherkin_generator=generator,
+        bdd_strategy=bdd_strategy,
+    )
+
+    outcome = tester.test_project(str(tmp_path))  # no milestone
+
+    assert generator.calls == []
+    assert outcome.ran is False
+
+
+def test_bdd_generation_failure_is_non_fatal(tmp_path):
+    (tmp_path / "manage.py").write_text("# django\n")
+
+    class _RaisingGenerator:
+        def generate(self, milestone):
+            raise RuntimeError("rate limited")
+
+    bdd_strategy = BehaveBDDStrategy()
+    tester = TesterAgent(
+        sandbox=MagicMock(),
+        max_output_chars=1000,
+        strategies=(),
+        gherkin_generator=_RaisingGenerator(),
+        bdd_strategy=bdd_strategy,
+    )
+
+    outcome = tester.test_project(str(tmp_path), milestone=_django_milestone())
+
+    assert outcome.ran is False  # no other strategies applicable, BDD skipped cleanly
+    assert bdd_strategy.detect(str(tmp_path)) is False

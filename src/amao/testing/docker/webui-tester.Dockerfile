@@ -10,4 +10,4 @@ RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends chromium chromium-driver \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir --quiet selenium
+RUN pip install --no-cache-dir --quiet selenium behave

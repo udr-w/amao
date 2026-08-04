@@ -176,7 +176,7 @@ target image as a non-root user. This project has real Docker available -- use i
 - [x] Update this file's checkboxes to match reality
 - [ ] Commit and push — don't let multiple phases pile up uncommitted (in progress; do this next)
 
-### Phase 3 — Tier-2 web UI strategies (IN PROGRESS -- web UI done, BDD not started)
+### Phase 3 — Tier-2 web UI strategies (Python web UI + BDD done; Node not started)
 - [x] Detect a web app (Django via `manage.py`, Flask/FastAPI via dependency-manifest text search,
       or a bare static `index.html`) as a distinct signal from "has tests" -- `_detect_python_web_kind()`
       in `strategies.py`. Node web apps not covered yet, see the note below.
@@ -195,16 +195,31 @@ target image as a non-root user. This project has real Docker available -- use i
       avoid mixing runtimes in one image, per decision #4 -- and its own pre-built image, per
       finding #3, for the same chromium-install-cost reason. Structurally the same shape as
       `PythonWebUIStrategy`; nobody has written or verified it yet.
-- [ ] BDD option, per the repo owner's explicit ask ("cucumber"): let the Tester (via an LLM call,
-      same pattern as the other agents) generate a Gherkin `.feature` file from the milestone
-      description, executed by `behave` for Python-target projects or `cucumber-js` for
-      Node-target projects — scope to those two ecosystems first, don't attempt every Cucumber
-      flavor (Ruby/JVM) in one pass. **Not started.**
-- [x] Unit tests for the web UI strategy (mocked -- detection logic, shell command construction,
-      `ensure_ready()` calling the image builder). Real-Docker verification was done directly via
-      Python one-liners during development (see finding #3), not yet turned into an automated,
-      opt-in "real Docker" test file the way Tier-1 strategies eventually should be too (Phase 4
-      CI task covers this).
+- [x] BDD option, per the repo owner's explicit ask ("cucumber"), for **Python-target projects**:
+      `src/amao/testing/bdd.py`. `GherkinGenerator` (wraps an `LLMBackend`, reuses the Planner's
+      via `Orchestrator`) generates a `.feature` file constrained to a small fixed step vocabulary
+      (visit homepage / click "x" / fill in "field" with "value" / should see "x" / title contains
+      "x") -- deliberately not free-form Gherkin, since arbitrary LLM-invented step phrasing
+      couldn't be matched to pre-shipped step definitions. `BehaveBDDStrategy` runs it via
+      `behave`, reusing `PythonWebUIStrategy`'s app-detection/app-start logic and the same
+      `amao-webui-tester:local` image (now also carrying `behave`). Wired into `TesterAgent` via
+      optional `gherkin_generator`/`bdd_strategy` params and a new `config.ENABLE_BDD` flag
+      (defaults false, and is inert unless `ENABLE_TESTER` is also true) -- kept as a separate,
+      narrower opt-in from Tier-1/web-UI screenshot testing since it's the least proven layer.
+      **Verified end-to-end against real Docker** with a hand-crafted scenario matching the
+      vocabulary (not a real LLM call -- no live API key available in this dev environment):
+      a 4-step pass case (visit, check title, click a real button, assert the resulting DOM
+      text) and a failing-assertion case both behaved correctly. **Not verified**: an actual
+      LLM-generated scenario end-to-end (only the prompt/constraint design and the execution
+      engine were tested, not that a real model reliably stays within the allowed vocabulary --
+      try this before fully trusting `ENABLE_BDD` in production). **Not implemented**: a
+      Node-target equivalent (`cucumber-js`) -- explicitly scoped out for a future pass.
+- [x] Unit tests for the web UI and BDD strategies (mocked -- detection logic, shell command
+      construction, `ensure_ready()` calling the image builder, `TesterAgent`'s scenario-generation
+      gating including the non-fatal-failure path). Real-Docker verification for both was done
+      directly via Python one-liners during development (see findings above), not yet turned into
+      an automated, opt-in "real Docker" test file the way Tier-1 strategies eventually should be
+      too (Phase 4 CI task covers this).
 
 ### Phase 4 — Polish, docs, CI (NOT STARTED)
 - [ ] README: document `ENABLE_TESTER`, the strategy list, and the Docker prerequisite this adds
@@ -228,12 +243,18 @@ leaving it to human review — that may be the more honest answer for some platf
 ```
 src/amao/testing/
   __init__.py
-  models.py       # TestOutcome
-  sandbox.py      # DockerSandbox
-  strategies.py   # TestStrategy ABC + Tier-1 strategies + registry
-  agent.py        # TesterAgent
+  models.py         # TestOutcome
+  sandbox.py        # DockerSandbox
+  strategies.py     # TestStrategy ABC + Tier-1 strategies + PythonWebUIStrategy + registry
+  agent.py          # TesterAgent
+  image_builder.py  # ensure_image_built() -- builds amao-webui-tester:local once, if missing
+  bdd.py            # GherkinGenerator + BehaveBDDStrategy
+  docker/
+    webui-tester.Dockerfile
 tests/
   test_testing_sandbox.py
   test_testing_strategies.py
   test_testing_agent.py
+  test_testing_image_builder.py
+  test_testing_bdd.py
 ```

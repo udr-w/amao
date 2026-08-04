@@ -250,7 +250,9 @@ def test_passing_tests_attach_evidence_to_the_reviewer_call(tmp_path, deps, test
 
     _make(tmp_path, deps).run()
 
-    deps["tester"].test_project.assert_called_once_with(os.path.abspath(str(tmp_path)))
+    deps["tester"].test_project.assert_called_once_with(
+        os.path.abspath(str(tmp_path)), milestone=task
+    )
     evidence = deps["reviewer"].review_code.call_args.kwargs["test_evidence"]
     assert "pytest: PASSED" in evidence
     assert "3 passed" in evidence
