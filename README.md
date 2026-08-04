@@ -451,6 +451,10 @@ Found a security issue? See [SECURITY.md](./SECURITY.md) for how to report it pr
   (`detect()`, `shell_command()`, and a `docker_image`) and add it to `DEFAULT_STRATEGIES` — see
   [CONTRIBUTING.md](./CONTRIBUTING.md#adding-a-new-test-strategy).
 
+Scoped-but-not-started work (a web dashboard, per-subtask model tiering, and other deferred items)
+is tracked in [`NEXT_MILESTONES.md`](./NEXT_MILESTONES.md) — read it before starting any of those
+rather than re-deriving the design from scratch.
+
 ## Contributing
 
 Bug reports, feature requests, and pull requests are welcome — see
