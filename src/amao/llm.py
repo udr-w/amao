@@ -15,6 +15,7 @@ env var rather than assuming the default is stale everywhere.
 
 from __future__ import annotations
 
+import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -22,6 +23,11 @@ import anthropic
 from openai import NOT_GIVEN, OpenAI
 
 from amao.exceptions import ConfigError, ExecutionError
+
+
+def _image_base64(path: str) -> str:
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("ascii")
 
 
 @dataclass(frozen=True)
@@ -82,13 +88,26 @@ class LLMBackend(ABC):
     """
 
     @abstractmethod
-    def complete(self, *, system: str, user: str, cache_key: str, json_mode: bool = False) -> str:
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        cache_key: str,
+        json_mode: bool = False,
+        images: tuple[str, ...] = (),
+    ) -> str:
         """cache_key: a stable identifier for this call site, used to enable
         caching of the (identical, static) `system` content -- OpenAI's
         prompt_cache_key for routing, Anthropic's cache_control breakpoint.
         json_mode: request strict JSON output where the provider supports it
         natively (OpenAI-shaped APIs); ignored otherwise (Anthropic relies on
         the prompt's own instructions plus the caller's own JSON parsing).
+        images: local PNG file paths (e.g. a UI screenshot) attached to the
+        user message. Whether the *model* actually supports vision is on the
+        caller to get right by picking a vision-capable model -- amao has no
+        registry of which models do and doesn't try to guess; an
+        unsupported combination will surface as a provider API error.
         """
 
 
@@ -105,13 +124,33 @@ class OpenAIBackend(LLMBackend):
         self.model = model
         self.supports_cache_key = supports_cache_key
 
-    def complete(self, *, system: str, user: str, cache_key: str, json_mode: bool = False) -> str:
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        cache_key: str,
+        json_mode: bool = False,
+        images: tuple[str, ...] = (),
+    ) -> str:
+        user_content: object = user
+        if images:
+            parts: list[dict[str, object]] = [{"type": "text", "text": user}]
+            for path in images:
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{_image_base64(path)}"},
+                    }
+                )
+            user_content = parts
+
         # The SDK's overloads require message dicts typed with Literal role
         # fields; a plain runtime-built list can't satisfy that statically
         # even though it matches the actual API contract exactly.
         messages = [
             {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role": "user", "content": user_content},
         ]
         prompt_cache_key = cache_key if self.supports_cache_key else NOT_GIVEN
         if json_mode:
@@ -136,7 +175,31 @@ class AnthropicBackend(LLMBackend):
         self.model = model
         self.max_tokens = max_tokens
 
-    def complete(self, *, system: str, user: str, cache_key: str, json_mode: bool = False) -> str:
+    def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        cache_key: str,
+        json_mode: bool = False,
+        images: tuple[str, ...] = (),
+    ) -> str:
+        user_content: object = user
+        if images:
+            parts: list[dict[str, object]] = [{"type": "text", "text": user}]
+            for path in images:
+                parts.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": _image_base64(path),
+                        },
+                    }
+                )
+            user_content = parts
+
         # Anthropic has no app-supplied cache-key concept like OpenAI's -- it
         # caches by content hash under the hood. A non-empty `cache_key` here
         # just signals "mark this system block as cacheable"; the >=1024-token
@@ -147,14 +210,14 @@ class AnthropicBackend(LLMBackend):
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": user}],
+                messages=[{"role": "user", "content": user_content}],  # type: ignore[typeddict-item]
             )
         else:
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=system,
-                messages=[{"role": "user", "content": user}],
+                messages=[{"role": "user", "content": user_content}],  # type: ignore[typeddict-item]
             )
         content_block = response.content[0]
         if not isinstance(content_block, anthropic.types.TextBlock):

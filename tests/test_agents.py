@@ -18,12 +18,13 @@ class _FakeBackend(LLMBackend):
         self._content = content
         self.last_call = None
 
-    def complete(self, *, system, user, cache_key, json_mode=False):
+    def complete(self, *, system, user, cache_key, json_mode=False, images=()):
         self.last_call = {
             "system": system,
             "user": user,
             "cache_key": cache_key,
             "json_mode": json_mode,
+            "images": images,
         }
         return self._content
 
@@ -195,6 +196,17 @@ def test_review_code_uses_static_system_prompt_json_mode_and_cache_key():
     assert "Add feature" in backend.last_call["user"]
     assert backend.last_call["json_mode"] is True
     assert backend.last_call["cache_key"] == "amao-review-code"
+    assert backend.last_call["images"] == ()
+
+
+def test_review_code_forwards_screenshots_to_the_backend():
+    backend = _FakeBackend('{"status": "APPROVED", "feedback": "ok"}')
+    reviewer = ReviewerAgent(backend)
+
+    reviewer.review_code(_milestone(), "diff --git a/x b/x", screenshots=("/tmp/shot.png",))
+
+    assert backend.last_call["images"] == ("/tmp/shot.png",)
+    assert "screenshot" in backend.last_call["user"].lower()
 
 
 def test_review_code_rejects_empty_diff_without_calling_llm():

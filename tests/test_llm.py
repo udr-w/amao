@@ -79,6 +79,29 @@ def test_openai_backend_omits_cache_key_when_unsupported():
     assert client.last_kwargs["prompt_cache_key"] is NOT_GIVEN
 
 
+def test_openai_backend_attaches_images_as_content_parts(tmp_path):
+    image_path = tmp_path / "shot.png"
+    image_path.write_bytes(b"fake-png-bytes")
+    client = _FakeOpenAIClient("ok")
+    backend = OpenAIBackend(client, model="gpt-4o")
+
+    backend.complete(system="s", user="describe this", cache_key="k", images=(str(image_path),))
+
+    content = client.last_kwargs["messages"][1]["content"]
+    assert content[0] == {"type": "text", "text": "describe this"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_openai_backend_plain_string_content_when_no_images():
+    client = _FakeOpenAIClient("ok")
+    backend = OpenAIBackend(client, model="gpt-4o")
+
+    backend.complete(system="s", user="u", cache_key="k")
+
+    assert client.last_kwargs["messages"][1]["content"] == "u"
+
+
 def test_anthropic_backend_marks_system_as_cacheable_when_cache_key_given():
     client = _FakeAnthropicClient("ok")
     backend = AnthropicBackend(client, model="claude-3-7-sonnet-20250219")
@@ -106,6 +129,20 @@ def test_anthropic_backend_ignores_json_mode_flag():
     result = backend.complete(system="s", user="u", cache_key="k", json_mode=True)
 
     assert result == '{"a": 1}'  # relies on prompt instructions, not an API param
+
+
+def test_anthropic_backend_attaches_images_as_content_parts(tmp_path):
+    image_path = tmp_path / "shot.png"
+    image_path.write_bytes(b"fake-png-bytes")
+    client = _FakeAnthropicClient("ok")
+    backend = AnthropicBackend(client, model="claude-3-7-sonnet-20250219")
+
+    backend.complete(system="s", user="describe this", cache_key="k", images=(str(image_path),))
+
+    content = client.last_kwargs["messages"][0]["content"]
+    assert content[0] == {"type": "text", "text": "describe this"}
+    assert content[1]["type"] == "image"
+    assert content[1]["source"]["media_type"] == "image/png"
 
 
 def test_anthropic_backend_raises_on_unexpected_content_block_type():

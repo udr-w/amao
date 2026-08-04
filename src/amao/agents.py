@@ -144,7 +144,11 @@ class ReviewerAgent:
 
     @with_retry_and_backoff()
     def review_code(
-        self, milestone: Milestone, git_diff: str, test_evidence: str | None = None
+        self,
+        milestone: Milestone,
+        git_diff: str,
+        test_evidence: str | None = None,
+        screenshots: tuple[str, ...] = (),
     ) -> ReviewResult:
         if not git_diff.strip():
             return ReviewResult(status="REJECTED", feedback="No changes were made in git diff.")
@@ -156,11 +160,17 @@ class ReviewerAgent:
         )
         if test_evidence:
             user_prompt += f"\n\nAutomated Test Results:\n{test_evidence}"
+        if screenshots:
+            user_prompt += (
+                "\n\nA screenshot of the running application is attached -- use it to verify "
+                "any UI requirements in the milestone (layout, visible text, images)."
+            )
         content = self.backend.complete(
             system=_REVIEWER_SYSTEM_PROMPT,
             user=user_prompt,
             cache_key="amao-review-code",
             json_mode=True,
+            images=screenshots,
         )
         payload = _strip_code_fence(content)
         try:

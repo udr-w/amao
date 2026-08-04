@@ -155,6 +155,7 @@ class Orchestrator:
                 )
 
             test_evidence: str | None = None
+            screenshots: tuple[str, ...] = ()
             if config.ENABLE_TESTER:
                 logger.info("Running automated tests...")
                 outcome = self.tester.test_project(self.project_dir)
@@ -182,9 +183,12 @@ class Orchestrator:
                     return self.state.get_next_pending_milestone()
                 if outcome.ran:
                     test_evidence = f"{outcome.summary}\n{outcome.output[:_ERROR_FEEDBACK_CHARS]}"
+                    screenshots = outcome.screenshots
 
             logger.info("Submitting Git diff to Reviewer...")
-            review = self.reviewer.review_code(task, review_diff, test_evidence=test_evidence)
+            review = self.reviewer.review_code(
+                task, review_diff, test_evidence=test_evidence, screenshots=screenshots
+            )
             self.state.log(
                 task.id, "REVIEW_COMPLETED", {"status": review.status, "feedback": review.feedback}
             )

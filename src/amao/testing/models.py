@@ -17,3 +17,6 @@ class TestOutcome:
     summary: str
     output: str
     strategy_names: tuple[str, ...] = field(default_factory=tuple)
+    # Host filesystem paths (under project_dir) to screenshots captured by UI
+    # strategies -- real files once the container that wrote them has exited.
+    screenshots: tuple[str, ...] = field(default_factory=tuple)
