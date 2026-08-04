@@ -165,6 +165,15 @@ with a goal you actually care about.
 pip install -e ".[dev]"
 ```
 
+On Debian/Ubuntu (and other distros shipping PEP 668 "externally managed" Python), that command
+fails outside a virtual environment. Use one:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+# or, if python3-venv isn't installed and you don't want to `apt install` it:
+uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]" && source .venv/bin/activate
+```
+
 ### Configuration
 
 Copy `.env.example` to `.env` and fill in real values (never commit `.env`), or export the
