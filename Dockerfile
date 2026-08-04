@@ -1,4 +1,4 @@
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /build
 COPY pyproject.toml README.md ./
@@ -8,7 +8,7 @@ RUN python -m venv /venv \
     && /venv/bin/pip install --no-cache-dir --upgrade pip \
     && /venv/bin/pip install --no-cache-dir .
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # GitHelper/apply_diff shell out to the git binary -- it is a hard runtime dependency.
 RUN apt-get update \
