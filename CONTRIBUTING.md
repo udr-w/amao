@@ -19,7 +19,9 @@ pip install -e ".[dev]"
 
 Tests don't call any real API — OpenAI/Anthropic clients are mocked, so you don't need API keys
 to develop or run the test suite. `git_helper.py` tests do shell out to a real, local `git`
-binary in a temp directory (no network access needed).
+binary in a temp directory (no network access needed). The `testing/` (Tester agent) unit tests
+mock `subprocess`/Docker calls the same way — you don't need Docker installed just to run `pytest`,
+only if you want to actually exercise `ENABLE_TESTER` end-to-end (see below).
 
 ## Before opening a PR
 
@@ -77,6 +79,38 @@ sign the abstraction leaked and is itself worth fixing.
 
 Model names for third-party providers move fast — double check the provider's current docs before
 picking a `default_model`, and mention in your PR when you last verified it resolves.
+
+## Adding a new test strategy
+
+`src/amao/testing/strategies.py` is the extension point for the Tester agent. Implement
+`TestStrategy`:
+
+```python
+class MyStrategy(TestStrategy):
+    name = "my-thing"
+    docker_image = "some-official-image:tag"
+
+    def detect(self, project_dir: str) -> bool:
+        ...  # cheap filesystem check -- must be strict enough that irrelevant
+        # projects never get this strategy's tooling
+
+    def shell_command(self, project_dir: str) -> str: ...  # setup + run, as one `sh -c` command
+```
+
+and add it to `DEFAULT_STRATEGIES`. Prefer a plain official upstream image with setup done at run
+time (see `PytestStrategy`/`NpmTestStrategy`/`GoTestStrategy`) — that's the default posture. Only
+reach for a pre-built custom image (`ensure_ready()` + `image_builder.ensure_image_built()`, see
+`PythonWebUIStrategy`) if setup cost specifically demands it, the way Chromium's ~14-minute
+`apt-get install` did; that tradeoff is documented in `TESTER_AGENT_PLAN.md` and shouldn't be
+reached for by default.
+
+**Verify a new strategy against a real Docker daemon before considering it done, not just the
+mocked unit tests.** This project's own history is the reason for that rule, not just caution for
+its own sake: the mocked tests proved the constructed shell command looked right, but real runs
+caught that official images run as root by default (leaving root-owned files in the user's
+project dir), that non-root `pip install` silently falls back to a `$PATH`-less `--user` mode, and
+the Chromium install-cost problem above — none of which a mock could have caught, because they're
+about how the *target Docker image* actually behaves, not amao's own logic.
 
 ## Pull requests
 

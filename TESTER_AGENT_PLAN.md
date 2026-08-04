@@ -4,9 +4,12 @@
 "Current status" line and the phase checklists below for the next unchecked item. Say "resume
 tester agent work" and pick up from there.
 
-Current status: **Phases 0-2 + wiring done and verified -- all three Tier-1 strategies
-(pytest/npm/go) confirmed against a real, non-mocked Docker daemon, pass and fail cases each.
-Phase 3 (web UI / Selenium / Cucumber) and Phase 4 (docs/CI polish) not started.**
+Current status: **Phases 0, 1, 2, 4 done. Phase 3 done for Python web UI + BDD/behave; Node web
+UI/cucumber-js explicitly not implemented (see the Phase 3 checklist).** Everything built so far
+is real-Docker-verified (Tier-1 in CI now too, via the `real-docker-tester` job; web-UI/BDD
+verified manually during development, not yet in CI). Remaining known gaps, in priority order:
+Node web/BDD strategies, and live-verifying an actual LLM-generated BDD scenario end-to-end (only
+a hand-crafted one matching the vocabulary has been tested against real Docker so far).
 
 ## Why this feature exists
 
@@ -54,11 +57,17 @@ browser for UI-bearing projects — before the Reviewer ever sees the diff.
    image bundling every language's toolchain. This is both leaner and a more literal expression of
    decision #2 — a Go project's container never even has Python installed, let alone pytest.
 
-5. **`ENABLE_TESTER` defaults to `false` for now.** This is a deliberate, temporary rollout
-   choice, not a design endpoint — flag it for review once Phase 2 is solid. Reasoning: this
-   feature adds a new hard runtime prerequisite (Docker must be installed and reachable) and a new
-   pipeline stage that didn't exist before. Flipping the default on for every existing user without
-   Docker available would break them. Once this has real mileage, reconsider defaulting to `true`.
+5. **`ENABLE_TESTER` defaults to `false` — reviewed after Phase 3, kept `false`, and this is now
+   the durable answer, not a placeholder.** The original reasoning ("flag it for review once Phase
+   2 is solid") suggested maturity was the blocker. It wasn't, or at least isn't the *lasting*
+   one: Tier-1 is now fully proven (real-Docker-verified in CI, see Phase 4). The reason to keep
+   this opt-in doesn't go away as the feature matures, though, because it was never really about
+   maturity -- **Docker is a new hard runtime prerequisite this pipeline stage didn't have
+   before**, and defaulting it on would silently break every existing user/CI setup that runs amao
+   without Docker installed, no matter how well-tested the feature itself is. `ENABLE_BDD` is
+   the one sub-flag where "not mature yet" is still the actual, temporary reason (see the Phase 3
+   entry above) -- worth revisiting once a real LLM-generated scenario has been verified
+   end-to-end, unlike `ENABLE_TESTER` itself.
 
 6. **Test failures are data, not exceptions.** `TesterAgent.test_project()` always returns a
    `TestOutcome` — it does not raise for "the tests ran and failed," exactly the same way
@@ -221,14 +230,25 @@ target image as a non-root user. This project has real Docker available -- use i
       an automated, opt-in "real Docker" test file the way Tier-1 strategies eventually should be
       too (Phase 4 CI task covers this).
 
-### Phase 4 — Polish, docs, CI (NOT STARTED)
-- [ ] README: document `ENABLE_TESTER`, the strategy list, and the Docker prerequisite this adds
-- [ ] CONTRIBUTING.md: "Adding a new test strategy" section, mirroring the existing
-      "Adding a new LLM provider" one
-- [ ] Revisit decision #5 (`ENABLE_TESTER` default) once Phase 2/3 have real mileage
-- [ ] CI: consider a job that exercises at least one strategy against a real Docker daemon
-      (GitHub Actions `ubuntu-latest` runners have Docker available) as an integration check,
-      separate from the mocked unit tests
+### Phase 4 — Polish, docs, CI (DONE)
+- [x] README: new "Automated testing (the Tester agent)" section documenting `ENABLE_TESTER`/
+      `ENABLE_BDD`/`TESTER_TIMEOUT_SECONDS`/`MAX_TEST_OUTPUT_CHARS`, the full strategy table, the
+      Docker prerequisite (Prerequisites section), the custom-image tradeoff, and honest
+      limitations. Security Notes and Extending the System sections updated too.
+- [x] CONTRIBUTING.md: "Adding a new test strategy" section mirroring "Adding a new LLM provider",
+      including the "verify against real Docker" rule and why it exists (this project's own bugs).
+- [x] Revisited decision #5 (see above) — kept `ENABLE_TESTER` defaulting to `false`, but the
+      *reason* changed from "not mature enough yet" to "Docker is a hard new runtime prerequisite,
+      which stays true no matter how mature the feature gets." `ENABLE_BDD` is the one flag where
+      "not mature yet" still applies.
+- [x] CI: new `real-docker-tester` job in `.github/workflows/ci.yml`, running
+      `tests/test_testing_real_docker.py` (marked `real_docker`, excluded from the default `pytest`
+      run via `-m 'not real_docker'` in `pyproject.toml`) against a real Docker daemon on
+      `ubuntu-latest`. Scoped to `PytestStrategy` only (fast, no custom image to build) --
+      confirmed locally: 3/3 passing in ~25s, including a regression check for the root-owned-files
+      bug this project found and fixed. The Chromium-based strategies are not in this CI job (their
+      pre-built image takes minutes the first time; not worth that cost on every push) --
+      live-verified manually during development instead (see the Phase 3 entries above).
 
 ## Open question (not yet decided — flag before starting native UI work)
 

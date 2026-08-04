@@ -62,11 +62,14 @@ warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=amao --cov-report=term-missing --cov-fail-under=75"
+addopts = "--cov=amao --cov-report=term-missing --cov-fail-under=75 -m 'not real_docker'"
 # TesterAgent/TesterInfraError coincidentally match pytest's default Test*
 # class-discovery pattern; both have __init__ so pytest correctly skips
 # collecting them, but still warns about the name match. Benign, silence it.
 filterwarnings = ["ignore::_pytest.warning_types.PytestCollectionWarning"]
+markers = [
+    "real_docker: needs an actual Docker daemon (not mocked); excluded from the default run, see CI's separate real-docker job",
+]
 
 [tool.coverage.run]
 source = ["src/amao"]

@@ -107,6 +107,11 @@ with a goal you actually care about.
   problems, git/database errors, exhausted rate-limit retries — halts the run and pages a human.
   See `src/amao/exceptions.py`.
 * **Multi-channel notifications.** Posts to any HTTPS Slack/Discord-style webhook.
+* **Optional Tester agent: runs the project's own tests, not just an LLM's opinion of the diff.**
+  Sits between Executor and Reviewer, in a disposable Docker sandbox — pytest/npm/go test for
+  backend code, a headless-Chromium Selenium check plus a screenshot for web UIs, and an
+  LLM-generated `behave`/Gherkin scenario for click-through interactions. See
+  [Automated testing](#automated-testing-the-tester-agent).
 
 ## Repository Structure
 
@@ -123,7 +128,14 @@ with a goal you actually care about.
 │   ├── notifier.py         # HTTPS webhook alert dispatcher
 │   ├── agents.py           # PlannerAgent, LocalExecutorAgent, ReviewerAgent (provider-agnostic)
 │   ├── git_helper.py       # Git subprocess wrapper + sandboxed apply_diff
-│   └── orchestrator.py     # Main pipeline loop / state machine
+│   ├── orchestrator.py     # Main pipeline loop / state machine
+│   └── testing/            # Optional Tester agent (see "Automated testing" below)
+│       ├── agent.py            # TesterAgent: runs applicable strategies, aggregates a TestOutcome
+│       ├── strategies.py       # TestStrategy ABC + pytest/npm/go/web-UI strategies + registry
+│       ├── bdd.py              # LLM-generated Gherkin scenario + behave execution
+│       ├── sandbox.py          # DockerSandbox: runs a strategy's command in a disposable container
+│       ├── image_builder.py    # Builds the pre-baked Chromium/selenium/behave image, once
+│       └── docker/webui-tester.Dockerfile
 ├── examples/demo_run.py     # Self-contained demo (CLI Task Manager app) -- one example, not the only use
 ├── tests/                   # pytest suite (mocked SDKs, real git in tmp dirs)
 ├── pyproject.toml
@@ -137,6 +149,8 @@ with a goal you actually care about.
 
 * Python 3.10+
 * Git, available on `PATH` (required at runtime, not just for development)
+* Docker, available and reachable — only if you turn on `ENABLE_TESTER`
+  (see [Automated testing](#automated-testing-the-tester-agent))
 
 ### Installation
 
@@ -240,6 +254,63 @@ no-op, not an error. amao's built-in system prompts are short, so this engages a
 for free the moment you (or a future version of this project) grow that prompt further — e.g. a
 fuller review rubric — with zero additional code.
 
+### Automated testing (the Tester agent)
+
+By default, the Reviewer only ever reads a `git diff` — it never runs the code it's judging. That
+works reasonably well for backend logic you can reason about from a diff, but it fundamentally
+can't answer UI questions ("is the button in the right place," "does this render") from text
+alone. The optional **Tester** agent sits between Executor and Reviewer and actually executes the
+project before anyone judges it:
+
+| Env var | Default | Effect |
+|---|---|---|
+| `ENABLE_TESTER` | `false` | Turns the whole Tester stage on. Off by default: it's a new hard runtime dependency (Docker) and pipeline stage that didn't exist before. |
+| `ENABLE_BDD` | `false` | Adds an LLM-generated `behave`/Gherkin UI scenario on top. Inert unless `ENABLE_TESTER` is also on. Off by default: it's the least-proven layer — see the caveat below. |
+| `TESTER_TIMEOUT_SECONDS` | `300` | Per-strategy timeout for the sandbox container. |
+| `MAX_TEST_OUTPUT_CHARS` | `20000` | Caps test output fed back as milestone feedback / Reviewer evidence. |
+
+**How it decides what to run** — `src/amao/testing/strategies.py`'s `TestStrategy.detect()` gates
+everything; a project only ever gets tooling relevant to it:
+
+| Strategy | Detects via | Runs in |
+|---|---|---|
+| `pytest` | `pyproject.toml`/`requirements.txt`/`setup.py`/`setup.cfg`, or loose `test_*.py` files | `python:3.12-slim` |
+| `npm-test` | `package.json`'s `scripts.test` | `node:20-slim` |
+| `go-test` | `go.mod` | `golang:1.24-bookworm` |
+| `web-ui-python` | Django (`manage.py`), Flask/FastAPI (dependency manifest), or a bare `index.html` | `amao-webui-tester:local` (pre-built, see below) |
+| `bdd-behave` | Same as `web-ui-python`, plus a scenario the Tester generated for this milestone | `amao-webui-tester:local` |
+
+A project with both `go.mod` and a `package.json` test script gets both `go-test` and `npm-test`;
+a pure-Go project never gets Node or Python tooling, and vice versa.
+
+**What happens with the result:**
+
+* A hard test failure short-circuits straight to REJECTED, with the test output as feedback —
+  the Reviewer is never even called, the same way an empty diff already skips it.
+* A pass (or "nothing applicable to test") proceeds to the Reviewer as before, now with a
+  test-evidence summary — and, for `web-ui-python`, a screenshot — attached to its prompt.
+* A sandbox/infra failure (Docker missing, image build failure) halts the run and notifies you,
+  the same as any other infra failure — it does **not** count against a milestone's retry budget.
+
+**The Chromium-based strategies use a different image strategy than pytest/npm/go on purpose.**
+Installing Chromium fresh via `apt-get` on every run was measured at **~14 minutes** (it pulls in
+a large X11/GTK dependency tree a slim image has none of) — completely impractical for a pipeline
+that can retry a milestone several times. `image_builder.py` instead builds a small local-only
+`amao-webui-tester:local` image (Chromium + selenium + behave pre-installed) once, checking
+`docker image inspect` first; every run after that is a plain `docker run` against the already-built
+image — confirmed at **~32 seconds** end-to-end once built.
+
+**Honest limitations, not hidden ones:**
+* Only Python web apps are covered (Django/Flask/FastAPI/static). A Node-target UI/BDD strategy
+  is planned but not built — see `TESTER_AGENT_PLAN.md`.
+* `bdd-behave`'s Gherkin generation is constrained to a small fixed step vocabulary (visit the
+  homepage / click "x" / fill in "field" with "value" / should see "x" / title contains "x") —
+  not free-form Gherkin. An LLM inventing its own step phrasing couldn't be matched against step
+  definitions shipped ahead of time, so this trades generality for something that actually runs.
+* This whole layer got real, non-mocked Docker verification during development (see
+  `TESTER_AGENT_PLAN.md` for specifics) — but an actual LLM-generated BDD scenario, end-to-end,
+  has not been — only the prompt design and the execution engine were verified directly.
+
 ### Running
 
 Via the CLI:
@@ -312,6 +383,15 @@ smoke check.
   [Rewiring the agents](#rewiring-the-agents) — not a hardcoded pair.
 * **No secrets in version control.** `.gitignore` excludes `.env`, `*.db`, and generated project
   workspaces; `.env.example` documents the expected variables without real values.
+* **The Tester agent (`ENABLE_TESTER`) runs LLM-generated code, unlike everything else in amao,
+  which only ever validates and applies diffs.** That's a materially larger security surface, so
+  it's sandboxed accordingly: every strategy runs in a disposable, `--rm` Docker container as the
+  *host's* UID/GID (never root, even though the base images default to it), scoped to a mounted
+  copy of the project directory only. It is **not** run with `--network none` — setup steps
+  (`pip install`, `npm install`) need to reach public package registries, a deliberate and narrower
+  tradeoff than full isolation, not full network access to arbitrary code. See
+  [Automated testing](#automated-testing-the-tester-agent) and `TESTER_AGENT_PLAN.md` for the full
+  reasoning and its limits.
 
 Found a security issue? See [SECURITY.md](./SECURITY.md) for how to report it privately.
 
@@ -325,6 +405,9 @@ Found a security issue? See [SECURITY.md](./SECURITY.md) for how to report it pr
   diff string; `GitHelper.apply_diff` will validate and apply it either way.
 * **Adjusting loop guard limits:** change `MAX_REVIEW_ATTEMPTS` via the environment.
 * **Adding notification providers:** extend `Notifier` in `src/amao/notifier.py`.
+* **Adding a new test strategy:** implement `TestStrategy` in `src/amao/testing/strategies.py`
+  (`detect()`, `shell_command()`, and a `docker_image`) and add it to `DEFAULT_STRATEGIES` — see
+  [CONTRIBUTING.md](./CONTRIBUTING.md#adding-a-new-test-strategy).
 
 ## Contributing
 
