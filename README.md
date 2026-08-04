@@ -96,9 +96,14 @@ with a goal you actually care about.
 * **Persistent SQLite checkpoints.** Every milestone, audit log entry, and error state is recorded
   in `orchestrator_state.db` inside the target project directory. A crashed or restarted run
   resumes exactly where it left off.
-* **Exponential backoff with a ceiling.** Rate-limit/quota errors (detected via the SDK's
-  `status_code`, with a string-matching fallback) are retried with jittered exponential backoff,
-  capped at `MAX_SLEEP_SECONDS`.
+* **Exponential backoff with a ceiling — but only for errors retrying can actually fix.** A
+  transient rate limit (detected via the SDK's `status_code`, with a string-matching fallback) is
+  retried with jittered exponential backoff, capped at `MAX_SLEEP_SECONDS`. Quota/billing
+  exhaustion (`insufficient_quota`) is a *different* failure that no amount of waiting resolves —
+  it's detected separately and raised immediately instead of burning ~90 seconds retrying something
+  that can never succeed. Both the OpenAI and Anthropic clients are also constructed with
+  `max_retries=0` so the SDK's own default retrying can't silently multiply requests underneath
+  this logic.
 * **Loop safety guard.** After `MAX_REVIEW_ATTEMPTS` failed reviews on the same milestone, the
   engine halts that milestone and notifies a human instead of burning tokens in an infinite
   fix/review cycle.
