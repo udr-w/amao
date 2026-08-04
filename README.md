@@ -167,14 +167,34 @@ with a goal you actually care about.
 pip install -e ".[dev]"
 ```
 
-On Debian/Ubuntu (and other distros shipping PEP 668 "externally managed" Python), that command
-fails outside a virtual environment. Use one:
+If that's all you needed, skip ahead. If not, you'll hit one of two errors, in order, depending on
+your system:
+
+**1. `error: externally-managed-environment`** — Debian/Ubuntu-family systems (PEP 668) refuse
+`pip install` outside a virtual environment, by design. Create one first:
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
-# or, if python3-venv isn't installed and you don't want to `apt install` it:
-uv venv .venv && uv pip install --python .venv/bin/python -e ".[dev]" && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 ```
+
+**2. `ensurepip is not available`** (while running the `python3 -m venv` command above) — the
+`python3-venv` package itself isn't installed, which is common on minimal/server Debian/Ubuntu
+images, some containers, and WSL. Pick one:
+
+```bash
+# Option A: install the missing system package, then retry python3 -m venv above
+sudo apt install python3.12-venv   # match your `python3 --version`
+
+# Option B: skip apt entirely and use uv instead (no sudo needed)
+uv venv .venv
+uv pip install --python .venv/bin/python -e ".[dev]"
+source .venv/bin/activate
+```
+
+(No `uv`? Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh`, or via `pipx install
+uv` — see [astral.sh/uv](https://astral.sh/uv) for other methods.)
 
 ### Configuration
 
