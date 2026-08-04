@@ -4,7 +4,8 @@
 "Current status" line and the phase checklists below for the next unchecked item. Say "resume
 tester agent work" and pick up from there.
 
-Current status: **Phase 1 in progress.**
+Current status: **Phases 0-2 + wiring done and verified (including a real, non-mocked Docker
+run). Phase 3 (web UI / Selenium / Cucumber) and Phase 4 (docs/CI polish) not started.**
 
 ## Why this feature exists
 
@@ -80,46 +81,83 @@ browser for UI-bearing projects — before the Reviewer ever sees the diff.
   scenario that prompted this) needs different tooling per platform (Appium, XCUITest,
   WinAppDriver, ...) that this plan does not yet cover — see "Open question" below.
 
+## Real bugs a live Docker run caught that mocked unit tests couldn't (fixed, worth knowing why)
+
+A real, non-mocked `TesterAgent.test_project()` run against a throwaway pytest project surfaced
+two issues neither the mocked `subprocess.run` unit tests nor mypy/ruff could have caught, because
+they're about the *actual behavior of official Docker images*, not amao's own logic:
+
+1. **Root-owned files left in the user's project directory.** Official images
+   (`python:3.12-slim`, etc.) run as root by default, so anything the test command writes into the
+   mounted project dir (`.pytest_cache`, `__pycache__`, `node_modules`) came out owned by root on
+   the host -- the user running amao couldn't `rm -rf` their own project dir afterward without
+   `sudo`. Fixed in `sandbox.py` by adding `-u {uid}:{gid}` (host UID/GID) to the `docker run`
+   invocation via `_docker_user_args()`. Skipped on platforms without `os.getuid()` (Windows).
+
+2. **`pip install` then failing to find the installed package.** Once running as a non-root,
+   passwd-less UID, `pip install` silently falls back to `--user` mode (installs under
+   `$HOME/.local`), and that bin directory isn't on `$PATH` by default -- so `pytest` immediately
+   after came back "not found" (exit 127). Fixed two ways together: `sandbox.py` sets
+   `-e HOME=/tmp` (an arbitrary UID has no passwd entry, so `$HOME` is otherwise unset/unwritable,
+   which also breaks npm's cache dir the same way) and `PytestStrategy.shell_command()` now starts
+   with `export PATH="$HOME/.local/bin:$PATH"`.
+
+**Takeaway for future strategies (Phase 3 and beyond): always smoke-test a new strategy against a
+real Docker daemon before considering it done, not just the mocked unit tests.** The mocked tests
+prove amao constructs the right command; they cannot prove that command actually works inside the
+target image as a non-root user. This project has real Docker available -- use it.
+
 ## Phase checklist
 
 ### Phase 0 — Design (this document)
 - [x] Written and captures the settled decisions above.
 
 ### Phase 1 — Core infrastructure
-- [ ] `src/amao/testing/models.py` — `TestOutcome` dataclass
-- [ ] `src/amao/exceptions.py` — add `TesterInfraError(AmaoError)` (halts, not recoverable)
-- [ ] `src/amao/testing/sandbox.py` — `DockerSandbox`: runs a shell command in a disposable
+- [x] `src/amao/testing/models.py` — `TestOutcome` dataclass
+- [x] `src/amao/exceptions.py` — add `TesterInfraError(AmaoError)` (halts, not recoverable)
+- [x] `src/amao/testing/sandbox.py` — `DockerSandbox`: runs a shell command in a disposable
       container with the project dir mounted, captures output + exit code, enforces a timeout,
-      classifies Docker-CLI-level failures as `TesterInfraError` vs. a normal nonzero test exit
-- [ ] `src/amao/testing/strategies.py` — `TestStrategy` ABC (`name`, `docker_image`, `detect()`,
+      classifies Docker-CLI-level failures as `TesterInfraError` vs. a normal nonzero test exit.
+      Also runs as the host UID/GID with `HOME=/tmp` -- see "Real bugs" section above.
+- [x] `src/amao/testing/strategies.py` — `TestStrategy` ABC (`name`, `docker_image`, `detect()`,
       `shell_command()`) + a strategy registry/`detect_strategies()` helper
-- [ ] `src/amao/testing/agent.py` — `TesterAgent.test_project(project_dir) -> TestOutcome`,
+- [x] `src/amao/testing/agent.py` — `TesterAgent.test_project(project_dir) -> TestOutcome`,
       running every applicable strategy and aggregating results
-- [ ] `src/amao/config.py` — `ENABLE_TESTER` (default `false`), `TESTER_TIMEOUT_SECONDS`,
+- [x] `src/amao/config.py` — `ENABLE_TESTER` (default `false`), `TESTER_TIMEOUT_SECONDS`,
       `MAX_TEST_OUTPUT_CHARS`
-- [ ] Unit tests: mock `subprocess.run`, don't require a real Docker daemon in CI
+- [x] Unit tests: mock `subprocess.run`, don't require a real Docker daemon in CI
+      (`tests/test_testing_sandbox.py`)
 
 ### Phase 2 — Tier-1 strategies (run the project's own tests; any backend stack)
-- [ ] `PytestStrategy` (image `python:3.12-slim`)
-- [ ] `NpmTestStrategy` (image `node:20-slim`, detects via `package.json`'s `scripts.test`)
-- [ ] `GoTestStrategy` (image `golang:1.24-bookworm`, detects via `go.mod`)
-- [ ] Unit tests per strategy (detection logic + command construction)
+- [x] `PytestStrategy` (image `python:3.12-slim`) -- verified against a real Docker run, both a
+      passing and a failing case
+- [x] `NpmTestStrategy` (image `node:20-slim`, detects via `package.json`'s `scripts.test`) --
+      verified against a real Docker run (pass + fail cases). No PATH/permission issues: `npm
+      install` (no `-g`) installs into the mounted project dir itself, which the host UID already
+      owns, so the root-UID problem that hit pip didn't recur here.
+- [ ] `GoTestStrategy` (image `golang:1.24-bookworm`, detects via `go.mod`) -- pending real Docker
+      verification (image pull was still running when this checkpoint was written; picking up
+      immediately after). Don't mark this row done until that verification actually happens.
+- [x] Unit tests per strategy (detection logic + command construction) --
+      `tests/test_testing_strategies.py`
 
-### Wiring (do this alongside Phase 2, not after — it's what makes Phase 1+2 observable)
-- [ ] `ReviewerAgent.review_code()` gains an optional `test_evidence: str | None = None` param,
+### Wiring (done alongside Phase 2)
+- [x] `ReviewerAgent.review_code()` gained an optional `test_evidence: str | None = None` param,
       folded into the user prompt when present; default keeps existing callers unaffected
-- [ ] `Orchestrator._process_milestone()`: call the Tester after the Executor, before the
-      Reviewer, when `config.ENABLE_TESTER`; implement the short-circuit-on-failure /
+- [x] `Orchestrator._process_milestone()`: calls the Tester after the Executor, before the
+      Reviewer, when `config.ENABLE_TESTER`; implements the short-circuit-on-failure /
       attach-evidence-on-pass behavior from decision #1
-- [ ] `Orchestrator.__init__`: construct `self.tester` (DI-overridable like the other agents)
-- [ ] Orchestrator-level tests for: tests pass → reviewer called with evidence; tests fail →
+- [x] `Orchestrator.__init__`: constructs `self.tester` (DI-overridable like the other agents)
+- [x] Orchestrator-level tests for: tests pass → reviewer called with evidence; tests fail →
       short-circuit REJECTED, reviewer never called; no applicable strategy → falls through to
       reviewer as before; `TesterInfraError` → halts+notifies like other infra failures
+      (`tests/test_orchestrator.py`, the `tester_enabled` fixture and tests around it)
 
 ### Verification + commit (repeat after every phase, not just at the end)
-- [ ] `ruff check .` / `ruff format --check .` / `mypy src` / `pytest` all green
-- [ ] Update this file's checkboxes to match reality
-- [ ] Commit and push — don't let multiple phases pile up uncommitted
+- [x] `ruff check .` / `ruff format --check .` / `mypy src` / `pytest` all green (131 tests,
+      96% coverage as of this checkpoint)
+- [x] Update this file's checkboxes to match reality
+- [ ] Commit and push — don't let multiple phases pile up uncommitted (in progress; do this next)
 
 ### Phase 3 — Tier-2 web UI strategies (NOT STARTED)
 - [ ] Detect a web app (Flask/Django/FastAPI/Node server, or static HTML) as a distinct signal

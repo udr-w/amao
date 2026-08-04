@@ -29,6 +29,20 @@ class Config:
         default_factory=lambda: float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
     )
 
+    # The Tester agent runs a project's own tests in a disposable Docker
+    # container before the Reviewer sees the diff -- see TESTER_AGENT_PLAN.md.
+    # Off by default during rollout: it's a new hard runtime prerequisite
+    # (Docker) and a new pipeline stage that didn't exist before amao added it.
+    ENABLE_TESTER: bool = field(
+        default_factory=lambda: os.getenv("ENABLE_TESTER", "false").lower() == "true"
+    )
+    TESTER_TIMEOUT_SECONDS: float = field(
+        default_factory=lambda: float(os.getenv("TESTER_TIMEOUT_SECONDS", "300"))
+    )
+    MAX_TEST_OUTPUT_CHARS: int = field(
+        default_factory=lambda: int(os.getenv("MAX_TEST_OUTPUT_CHARS", "20000"))
+    )
+
     DB_FILENAME: str = "orchestrator_state.db"
 
     # Which provider powers each agent role -- any key in amao.llm.PROVIDERS

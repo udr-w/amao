@@ -63,6 +63,10 @@ warn_unused_ignores = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=amao --cov-report=term-missing --cov-fail-under=75"
+# TesterAgent/TesterInfraError coincidentally match pytest's default Test*
+# class-discovery pattern; both have __init__ so pytest correctly skips
+# collecting them, but still warns about the name match. Benign, silence it.
+filterwarnings = ["ignore::_pytest.warning_types.PytestCollectionWarning"]
 
 [tool.coverage.run]
 source = ["src/amao"]

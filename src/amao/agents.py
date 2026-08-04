@@ -131,7 +131,8 @@ class LocalExecutorAgent:
 
 _REVIEWER_SYSTEM_PROMPT = (
     "You are a Principal Code Reviewer. Analyze the given Git diff against the stated "
-    "milestone requirements. Respond STRICTLY in JSON:\n"
+    "milestone requirements, and weigh any automated test results provided -- they are "
+    "objective signal, not just the diff text. Respond STRICTLY in JSON:\n"
     '{"status": "APPROVED" | "REJECTED", "feedback": "Concise, actionable feedback if '
     'rejected, or confirmation if approved."}'
 )
@@ -142,7 +143,9 @@ class ReviewerAgent:
         self.backend = backend
 
     @with_retry_and_backoff()
-    def review_code(self, milestone: Milestone, git_diff: str) -> ReviewResult:
+    def review_code(
+        self, milestone: Milestone, git_diff: str, test_evidence: str | None = None
+    ) -> ReviewResult:
         if not git_diff.strip():
             return ReviewResult(status="REJECTED", feedback="No changes were made in git diff.")
 
@@ -151,6 +154,8 @@ class ReviewerAgent:
             f"Expected: {milestone.description}\n\n"
             f"Git Diff:\n```diff\n{git_diff}\n```"
         )
+        if test_evidence:
+            user_prompt += f"\n\nAutomated Test Results:\n{test_evidence}"
         content = self.backend.complete(
             system=_REVIEWER_SYSTEM_PROMPT,
             user=user_prompt,

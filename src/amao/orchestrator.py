@@ -11,6 +11,8 @@ from amao.llm import LLMBackend, build_backend
 from amao.models import Milestone, MilestoneStatus
 from amao.notifier import Notifier
 from amao.state_manager import StateManager
+from amao.testing.agent import TesterAgent
+from amao.testing.sandbox import DockerSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ class Orchestrator:
         planner: PlannerAgent | None = None,
         executor: LocalExecutorAgent | None = None,
         reviewer: ReviewerAgent | None = None,
+        tester: TesterAgent | None = None,
         state: StateManager | None = None,
         notifier: Notifier | None = None,
         git: GitHelper | None = None,
@@ -74,6 +77,10 @@ class Orchestrator:
         )
         self.reviewer = reviewer or ReviewerAgent(
             backend_for(config.REVIEWER_PROVIDER, config.REVIEWER_MODEL)
+        )
+        self.tester = tester or TesterAgent(
+            sandbox=DockerSandbox(timeout=config.TESTER_TIMEOUT_SECONDS),
+            max_output_chars=config.MAX_TEST_OUTPUT_CHARS,
         )
 
     def run(self) -> None:
@@ -147,8 +154,37 @@ class Orchestrator:
                     task.id,
                 )
 
+            test_evidence: str | None = None
+            if config.ENABLE_TESTER:
+                logger.info("Running automated tests...")
+                outcome = self.tester.test_project(self.project_dir)
+                self.state.log(
+                    task.id,
+                    "TEST_COMPLETED",
+                    {"ran": outcome.ran, "passed": outcome.passed, "summary": outcome.summary},
+                )
+                if outcome.ran and not outcome.passed:
+                    feedback = (
+                        f"Automated tests failed ({outcome.summary}):\n"
+                        f"{outcome.output[:_ERROR_FEEDBACK_CHARS]}"
+                    )
+                    logger.warning(
+                        "Milestone [%s] failed automated tests (%s); skipping Reviewer.",
+                        task.title,
+                        outcome.summary,
+                    )
+                    self.state.update_milestone_status(
+                        task.id,
+                        MilestoneStatus.IN_PROGRESS,
+                        attempts=task.attempts + 1,
+                        last_error=feedback,
+                    )
+                    return self.state.get_next_pending_milestone()
+                if outcome.ran:
+                    test_evidence = f"{outcome.summary}\n{outcome.output[:_ERROR_FEEDBACK_CHARS]}"
+
             logger.info("Submitting Git diff to Reviewer...")
-            review = self.reviewer.review_code(task, review_diff)
+            review = self.reviewer.review_code(task, review_diff, test_evidence=test_evidence)
             self.state.log(
                 task.id, "REVIEW_COMPLETED", {"status": review.status, "feedback": review.feedback}
             )

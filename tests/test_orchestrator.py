@@ -1,12 +1,14 @@
+import os
 from unittest.mock import MagicMock
 
 import pytest
 
 from amao.config import config
-from amao.exceptions import DiffApplyError, PlanningError
+from amao.exceptions import DiffApplyError, PlanningError, TesterInfraError
 from amao.llm import AnthropicBackend, OpenAIBackend
 from amao.models import Milestone, MilestoneStatus, ReviewResult
 from amao.orchestrator import Orchestrator
+from amao.testing.models import TestOutcome
 
 
 def _milestone(id=1, attempts=0, last_error=None, status=MilestoneStatus.PENDING):
@@ -21,6 +23,7 @@ def deps():
         "planner": MagicMock(),
         "executor": MagicMock(),
         "reviewer": MagicMock(),
+        "tester": MagicMock(),
         "state": MagicMock(),
         "notifier": MagicMock(),
         "git": MagicMock(),
@@ -103,7 +106,6 @@ def test_non_planning_exception_during_initial_plan_halts_gracefully(tmp_path, d
     deps["state"].get_next_pending_milestone.assert_not_called()
     title, _msg = _last_notify_call(deps)[0]
     assert title == "Planning Failed"
-    assert _last_notify_call(deps)[1]["requires_human"] is True
     assert _last_notify_call(deps)[1]["requires_human"] is True
 
 
@@ -212,3 +214,103 @@ def test_oversized_diff_is_truncated_before_review(tmp_path, deps):
     reviewed_diff = deps["reviewer"].review_code.call_args[0][1]
     assert len(reviewed_diff) < len(oversized)
     assert reviewed_diff.endswith("[diff truncated]")
+
+
+@pytest.fixture
+def tester_enabled():
+    # Config is frozen; ENABLE_TESTER defaults to false, so flip it directly
+    # for the duration of a test rather than trying to construct a second
+    # Config instance -- Orchestrator always reads the module-level singleton.
+    object.__setattr__(config, "ENABLE_TESTER", True)
+    yield
+    object.__setattr__(config, "ENABLE_TESTER", False)
+
+
+def test_tester_disabled_by_default_never_invoked(tmp_path, deps):
+    task = _milestone()
+    deps["state"].count_milestones.return_value = 1
+    deps["state"].get_next_pending_milestone.side_effect = [task, None]
+    deps["git"].get_diff.return_value = "diff --git a/x b/x"
+    deps["reviewer"].review_code.return_value = ReviewResult(status="APPROVED", feedback="ok")
+
+    _make(tmp_path, deps).run()
+
+    deps["tester"].test_project.assert_not_called()
+
+
+def test_passing_tests_attach_evidence_to_the_reviewer_call(tmp_path, deps, tester_enabled):
+    task = _milestone()
+    deps["state"].count_milestones.return_value = 1
+    deps["state"].get_next_pending_milestone.side_effect = [task, None]
+    deps["git"].get_diff.return_value = "diff --git a/x b/x"
+    deps["tester"].test_project.return_value = TestOutcome(
+        ran=True, passed=True, summary="pytest: PASSED", output="3 passed"
+    )
+    deps["reviewer"].review_code.return_value = ReviewResult(status="APPROVED", feedback="ok")
+
+    _make(tmp_path, deps).run()
+
+    deps["tester"].test_project.assert_called_once_with(os.path.abspath(str(tmp_path)))
+    evidence = deps["reviewer"].review_code.call_args.kwargs["test_evidence"]
+    assert "pytest: PASSED" in evidence
+    assert "3 passed" in evidence
+
+
+def test_no_applicable_tests_falls_through_to_reviewer_with_no_evidence(
+    tmp_path, deps, tester_enabled
+):
+    task = _milestone()
+    deps["state"].count_milestones.return_value = 1
+    deps["state"].get_next_pending_milestone.side_effect = [task, None]
+    deps["git"].get_diff.return_value = "diff --git a/x b/x"
+    deps["tester"].test_project.return_value = TestOutcome(
+        ran=False, passed=True, summary="No applicable test strategy was detected.", output=""
+    )
+    deps["reviewer"].review_code.return_value = ReviewResult(status="APPROVED", feedback="ok")
+
+    _make(tmp_path, deps).run()
+
+    assert deps["reviewer"].review_code.call_args.kwargs["test_evidence"] is None
+
+
+def test_failing_tests_short_circuit_to_rejected_without_calling_reviewer(
+    tmp_path, deps, tester_enabled
+):
+    task = _milestone()
+    deps["state"].count_milestones.return_value = 1
+    deps["state"].get_next_pending_milestone.side_effect = [task, None]
+    deps["git"].get_diff.return_value = "diff --git a/x b/x"
+    deps["tester"].test_project.return_value = TestOutcome(
+        ran=True, passed=False, summary="pytest: FAILED (exit 1)", output="AssertionError: boom"
+    )
+
+    _make(tmp_path, deps).run()
+
+    deps["reviewer"].review_code.assert_not_called()
+    deps["git"].commit_changes.assert_not_called()
+    deps["state"].update_milestone_status.assert_any_call(
+        task.id,
+        MilestoneStatus.IN_PROGRESS,
+        attempts=1,
+        last_error=("Automated tests failed (pytest: FAILED (exit 1)):\nAssertionError: boom"),
+    )
+
+
+def test_tester_infra_error_halts_and_notifies_like_other_infra_failures(
+    tmp_path, deps, tester_enabled
+):
+    task = _milestone()
+    deps["state"].count_milestones.return_value = 1
+    deps["state"].get_next_pending_milestone.side_effect = [task]
+    deps["git"].get_diff.return_value = "diff --git a/x b/x"
+    deps["tester"].test_project.side_effect = TesterInfraError("docker is not installed")
+
+    _make(tmp_path, deps).run()
+
+    deps["reviewer"].review_code.assert_not_called()
+    deps["state"].update_milestone_status.assert_any_call(
+        task.id, MilestoneStatus.HALTED, last_error="docker is not installed"
+    )
+    title, _msg = _last_notify_call(deps)[0]
+    assert title == "System Exception"
+    assert _last_notify_call(deps)[1]["requires_human"] is True

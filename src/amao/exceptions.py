@@ -39,3 +39,10 @@ class DiffApplyError(RecoverableExecutionError):
 
 class ExecutionError(RecoverableExecutionError):
     """The local executor could not produce a usable diff (e.g. bad JSON)."""
+
+
+class TesterInfraError(AmaoError):
+    """The test sandbox itself couldn't run (e.g. Docker missing, image pull
+    failed) -- distinct from the tests running and failing, which is a normal
+    TestOutcome, not an exception. Halts like other infra failures rather
+    than consuming a milestone's attempt budget."""
