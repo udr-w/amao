@@ -426,6 +426,21 @@ docker run --rm -it \
 The container mounts `/workspace` as a volume so generated code and the SQLite state file persist
 outside the container.
 
+`-e OPENAI_API_KEY -e ANTHROPIC_API_KEY` above is just the default configuration's two keys, the
+same way the default `PLANNER_PROVIDER`/`EXECUTOR_PROVIDER`/`REVIEWER_PROVIDER` are `openai`/
+`openai`/`anthropic` — Docker doesn't limit which providers you can use, `docker run -e VAR` only
+forwards a host environment variable through if it's set. All six providers from
+[Rewiring the agents](#rewiring-the-agents) work the same way in the container; pass through
+whichever `*_PROVIDER`/`*_MODEL`/`*_API_KEY` variables your configuration actually needs, e.g.:
+
+```bash
+docker run --rm -it \
+  -e PLANNER_PROVIDER=deepseek -e EXECUTOR_PROVIDER=deepseek -e REVIEWER_PROVIDER=deepseek \
+  -e DEEPSEEK_API_KEY \
+  -v "$(pwd)/workspace:/workspace" \
+  amao run --dir /workspace --goal "Build a ..."
+```
+
 ## Development
 
 ```bash
