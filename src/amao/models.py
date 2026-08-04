@@ -37,3 +37,16 @@ class ReviewResult:
 class ExecutionResult:
     status: str
     diff: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressSummary:
+    total: int
+    pending: int
+    in_progress: int
+    completed: int
+    halted: int
+    current_milestone_title: str | None
+    current_milestone_attempts: int
+    average_completed_seconds: float | None
+    estimated_remaining_seconds: float | None

@@ -112,6 +112,13 @@ with a goal you actually care about.
   backend code, a headless-Chromium Selenium check plus a screenshot for web UIs, and an
   LLM-generated `behave`/Gherkin scenario for click-through interactions. See
   [Automated testing](#automated-testing-the-tester-agent).
+* **Progress visibility and mid-flight milestones, without touching the database directly.**
+  `amao status` and `amao logs` read the same `orchestrator_state.db` a running `amao run` writes
+  to, and `amao add-milestone` appends a new one a running (or future) `amao run` picks up on its
+  next iteration. See [Monitoring and mid-flight changes](#monitoring-and-mid-flight-changes).
+* **Goal-grounded review.** The Reviewer's system prompt includes the project's original goal, not
+  just the current milestone's own spec — a cheap check against a milestone that technically
+  satisfies its own description but drifts from what the project is actually supposed to build.
 
 ## Repository Structure
 
@@ -329,6 +336,41 @@ Orchestrator(project_dir="./my_project", project_goal="Build a ...").run()
 
 Re-running `amao run` on the same `--dir` resumes from the existing `orchestrator_state.db` instead
 of re-planning.
+
+### Monitoring and mid-flight changes
+
+Three commands read or write the same `orchestrator_state.db` a running or finished `amao run`
+uses, without needing any LLM API key — they never construct an `Orchestrator`:
+
+```bash
+amao status --dir ./my_project
+```
+
+Prints milestone counts by status, the current in-progress milestone and its attempt count,
+average time per completed milestone and an estimated time remaining once there's enough
+completed-milestone data to base one on, and an explicit callout if any milestone is `HALTED`
+(stuck, needs a human — see `amao logs` to see why).
+
+```bash
+amao logs --dir ./my_project [--milestone 3] [--limit 20]
+```
+
+Prints audit log entries (planner output, review verdicts, test results) — the same data that's
+sitting in `orchestrator_state.db`'s `audit_logs` table, made readable without opening `sqlite3`
+directly. Filter to one milestone with `--milestone`, cap the number of entries with `--limit`
+(default 20).
+
+```bash
+amao add-milestone --dir ./my_project --title "Add CSV export" --description "..."
+```
+
+Appends a new `PENDING` milestone. If `amao run` is actively running against the same `--dir` in
+another process, it picks the new milestone up on its next iteration — milestones are processed in
+insertion order, and SQLite's WAL mode (already enabled) is what makes this safe across two
+processes touching the same file. This is the current answer to "how do I add a new idea without
+restarting the whole run": append it here rather than re-invoking `amao run --goal` (a new `--goal`
+on an existing `--dir` is otherwise ignored — planning only happens once, when the milestone table
+is empty).
 
 ### Running the Demo
 

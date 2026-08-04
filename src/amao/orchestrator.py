@@ -77,7 +77,8 @@ class Orchestrator:
             max_diff_chars=config.MAX_DIFF_CHARS,
         )
         self.reviewer = reviewer or ReviewerAgent(
-            backend_for(config.REVIEWER_PROVIDER, config.REVIEWER_MODEL)
+            backend_for(config.REVIEWER_PROVIDER, config.REVIEWER_MODEL),
+            project_goal=self.project_goal,
         )
         self.tester = tester or TesterAgent(
             sandbox=DockerSandbox(timeout=config.TESTER_TIMEOUT_SECONDS),

@@ -231,3 +231,23 @@ def test_review_code_raises_on_unexpected_status():
 
     with pytest.raises(ExecutionError):
         reviewer.review_code(_milestone(), "diff --git a/x b/x")
+
+
+def test_review_code_without_project_goal_omits_goal_from_system_prompt():
+    # Existing calling convention (no project_goal) must behave exactly as
+    # before -- guards against the new code path always appending something.
+    backend = _FakeBackend('{"status": "APPROVED", "feedback": "ok"}')
+    reviewer = ReviewerAgent(backend)
+
+    reviewer.review_code(_milestone(), "diff --git a/x b/x")
+
+    assert "project goal" not in backend.last_call["system"].lower()
+
+
+def test_review_code_with_project_goal_includes_it_in_system_prompt():
+    backend = _FakeBackend('{"status": "APPROVED", "feedback": "ok"}')
+    reviewer = ReviewerAgent(backend, project_goal="Build a CLI todo app")
+
+    reviewer.review_code(_milestone(), "diff --git a/x b/x")
+
+    assert "Build a CLI todo app" in backend.last_call["system"]

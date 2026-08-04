@@ -139,8 +139,18 @@ _REVIEWER_SYSTEM_PROMPT = (
 
 
 class ReviewerAgent:
-    def __init__(self, backend: LLMBackend) -> None:
+    def __init__(self, backend: LLMBackend, project_goal: str | None = None) -> None:
         self.backend = backend
+        if project_goal:
+            self._system_prompt = (
+                f"{_REVIEWER_SYSTEM_PROMPT}\n\n"
+                "You are also given the overall project goal this milestone is part of. "
+                "Flag in your feedback -- not necessarily reject solely for this reason, "
+                "unless clearly contradictory -- if the diff seems to drift from or "
+                f"contradict that bigger picture.\nOverall Project Goal: {project_goal}"
+            )
+        else:
+            self._system_prompt = _REVIEWER_SYSTEM_PROMPT
 
     @with_retry_and_backoff()
     def review_code(
@@ -166,7 +176,7 @@ class ReviewerAgent:
                 "any UI requirements in the milestone (layout, visible text, images)."
             )
         content = self.backend.complete(
-            system=_REVIEWER_SYSTEM_PROMPT,
+            system=self._system_prompt,
             user=user_prompt,
             cache_key="amao-review-code",
             json_mode=True,

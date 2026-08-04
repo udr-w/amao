@@ -62,6 +62,16 @@ def test_default_construction_wires_the_configured_provider_per_role(tmp_path, d
     assert orch.reviewer.backend.model == config.REVIEWER_MODEL
 
 
+def test_default_reviewer_is_grounded_in_the_orchestrators_project_goal(tmp_path, deps):
+    # Let the Orchestrator build its own default ReviewerAgent so we can check
+    # that project_goal actually gets wired into it, rather than mocking it away.
+    del deps["reviewer"]
+
+    orch = Orchestrator(project_dir=str(tmp_path), project_goal="Build a CLI todo app", **deps)
+
+    assert "Build a CLI todo app" in orch.reviewer._system_prompt
+
+
 def test_run_plans_once_when_state_is_empty(tmp_path, deps):
     deps["state"].count_milestones.return_value = 0
     deps["planner"].plan_project.return_value = [{"title": "A", "description": "d"}]
