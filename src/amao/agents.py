@@ -31,27 +31,46 @@ def _strip_code_fence(text: str) -> str:
     return content
 
 
+_PLAN_PROJECT_SYSTEM_PROMPT = (
+    "You are an elite Software Architect. Break down project goals into discrete, "
+    "sequential coding milestones, each actionable for an automated code generator. "
+    'Respond STRICTLY with JSON of the shape: {"milestones": '
+    '[{"title": "Milestone title", "description": "Detailed specs"}, ...]}'
+)
+
+_GENERATE_TASK_PROMPT_SYSTEM_PROMPT = (
+    "You are directing a local automated coding agent. Given a milestone title, its "
+    "requirements, and optional prior review feedback, output ONLY precise, "
+    "step-by-step instructions for completing that milestone -- no other commentary."
+)
+
+
 class PlannerAgent:
+    """Static instructions live in a `system` message, separate from the per-call
+    milestone/goal data. OpenAI's automatic prompt caching keys off an identical
+    prefix, so this is what lets `generate_task_prompt` -- called once per
+    milestone attempt, i.e. repeatedly within a run -- actually get cached once
+    the prompt is long enough. `prompt_cache_key` further improves cache-hit
+    routing per call type.
+    """
+
     def __init__(self, client: OpenAI, model: str) -> None:
         self.client = client
         self.model = model
 
     @with_retry_and_backoff()
     def plan_project(self, project_goal: str, max_milestones: int) -> list[dict[str, str]]:
-        prompt = f"""
-        You are an elite Software Architect. Break down the following project goal into discrete,
-        sequential coding milestones. Each milestone must be actionable for an automated code
-        generator. Produce no more than {max_milestones} milestones.
-
-        Project Goal: {project_goal}
-
-        Respond STRICTLY with JSON of the shape:
-        {{"milestones": [{{"title": "Milestone 1 title", "description": "Detailed specs"}}, ...]}}
-        """
+        user_prompt = (
+            f"Project Goal: {project_goal}\nProduce no more than {max_milestones} milestones."
+        )
         response = self.client.chat.completions.create(
             model=self.model,
             response_format={"type": "json_object"},
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": _PLAN_PROJECT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            prompt_cache_key="amao-plan-project",
         )
         content = response.choices[0].message.content or ""
         try:
@@ -68,19 +87,16 @@ class PlannerAgent:
 
     @with_retry_and_backoff()
     def generate_task_prompt(self, milestone: Milestone, feedback: str = "") -> str:
-        prompt = f"""
-        You are directing a local automated coding agent.
-        Create precise, step-by-step instructions for completing this milestone.
-
-        Milestone Title: {milestone.title}
-        Requirements: {milestone.description}
-        {"Previous Review Feedback (MUST FIX): " + feedback if feedback else ""}
-
-        Output ONLY the prompt to send to the local coder.
-        """
+        user_prompt = f"Milestone Title: {milestone.title}\nRequirements: {milestone.description}"
+        if feedback:
+            user_prompt += f"\nPrevious Review Feedback (MUST FIX): {feedback}"
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": _GENERATE_TASK_PROMPT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            prompt_cache_key="amao-generate-task-prompt",
         )
         content = response.choices[0].message.content
         if not content:
@@ -126,6 +142,7 @@ class LocalExecutorAgent:
                 {"role": "system", "content": _EXECUTOR_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
+            prompt_cache_key="amao-execute-prompt",
         )
         content = response.choices[0].message.content
         if not content:
@@ -134,6 +151,14 @@ class LocalExecutorAgent:
         diff_text = _strip_code_fence(content)
         self.git.apply_diff(diff_text, max_diff_chars=self.max_diff_chars)
         return ExecutionResult(status="SUCCESS", diff=diff_text)
+
+
+_REVIEWER_SYSTEM_PROMPT = (
+    "You are a Principal Code Reviewer. Analyze the given Git diff against the stated "
+    "milestone requirements. Respond STRICTLY in JSON:\n"
+    '{"status": "APPROVED" | "REJECTED", "feedback": "Concise, actionable feedback if '
+    'rejected, or confirmation if approved."}'
+)
 
 
 class ReviewerAgent:
@@ -146,28 +171,28 @@ class ReviewerAgent:
         if not git_diff.strip():
             return ReviewResult(status="REJECTED", feedback="No changes were made in git diff.")
 
-        prompt = f"""
-        You are a Principal Code Reviewer. Analyze the following Git Diff against the milestone
-        requirements.
-
-        Milestone: {milestone.title}
-        Expected: {milestone.description}
-
-        Git Diff:
-        ```diff
-        {git_diff}
-        ```
-
-        Respond STRICTLY in JSON:
-        {{
-            "status": "APPROVED" | "REJECTED",
-            "feedback": "Concise, actionable feedback if rejected, or confirmation if approved."
-        }}
-        """
+        user_prompt = (
+            f"Milestone: {milestone.title}\n"
+            f"Expected: {milestone.description}\n\n"
+            f"Git Diff:\n```diff\n{git_diff}\n```"
+        )
         response = self.client.messages.create(
             model=self.model,
             max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}],
+            # Anthropic requires >=1024 tokens (>=4096 on some newer model
+            # generations) per cache breakpoint before a block actually gets
+            # cached -- below that it just isn't cached, no error. This system
+            # prompt is short today, but marking it correctly now means caching
+            # engages automatically, with no further code change, the moment
+            # it's grown (e.g. a fuller review rubric) past that threshold.
+            system=[
+                {
+                    "type": "text",
+                    "text": _REVIEWER_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
         )
         content_block = response.content[0]
         if not isinstance(content_block, anthropic.types.TextBlock):

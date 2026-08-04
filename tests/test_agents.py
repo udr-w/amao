@@ -12,9 +12,11 @@ from amao.models import Milestone, MilestoneStatus
 class _FakeOpenAI:
     def __init__(self, content):
         self._content = content
+        self.last_kwargs = None
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     def _create(self, **kwargs):
+        self.last_kwargs = kwargs
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=self._content))]
         )
@@ -25,9 +27,11 @@ class _FakeAnthropic:
 
     def __init__(self, content):
         self._content = content
+        self.last_kwargs = None
         self.messages = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
+        self.last_kwargs = kwargs
         return SimpleNamespace(content=[TextBlock(type="text", text=self._content)])
 
 
@@ -101,19 +105,47 @@ def test_generate_task_prompt_raises_on_empty_response():
         planner.generate_task_prompt(_milestone())
 
 
+def test_plan_project_uses_static_system_message_and_cache_key():
+    client = _FakeOpenAI('{"milestones": [{"title": "A", "description": "d"}]}')
+    planner = PlannerAgent(client, model="gpt-4o")
+
+    planner.plan_project("build a thing", max_milestones=10)
+
+    messages = client.last_kwargs["messages"]
+    assert messages[0]["role"] == "system"
+    assert "Project Goal" not in messages[0]["content"]  # static, no per-call data
+    assert client.last_kwargs["prompt_cache_key"] == "amao-plan-project"
+
+
+def test_generate_task_prompt_uses_static_system_message_and_cache_key():
+    client = _FakeOpenAI("do step 1")
+    planner = PlannerAgent(client, model="gpt-4o")
+
+    planner.generate_task_prompt(_milestone())
+
+    messages = client.last_kwargs["messages"]
+    assert messages[0]["role"] == "system"
+    assert "Add feature" not in messages[0]["content"]  # static, no per-call data
+    assert client.last_kwargs["prompt_cache_key"] == "amao-generate-task-prompt"
+
+
+_VALID_NEW_FILE_DIFF = (
+    "diff --git a/hello.txt b/hello.txt\n"
+    "new file mode 100644\n"
+    "index 0000000..e69de29\n"
+    "--- /dev/null\n"
+    "+++ b/hello.txt\n"
+    "@@ -0,0 +1 @@\n"
+    "+hi\n"
+)
+
+
 def test_executor_applies_valid_diff(tmp_path):
     git = GitHelper(str(tmp_path))
     git.init_repo()
-    diff = (
-        "diff --git a/hello.txt b/hello.txt\n"
-        "new file mode 100644\n"
-        "index 0000000..e69de29\n"
-        "--- /dev/null\n"
-        "+++ b/hello.txt\n"
-        "@@ -0,0 +1 @@\n"
-        "+hi\n"
+    executor = LocalExecutorAgent(
+        git, _FakeOpenAI(_VALID_NEW_FILE_DIFF), model="gpt-4o", max_diff_chars=10_000
     )
-    executor = LocalExecutorAgent(git, _FakeOpenAI(diff), model="gpt-4o", max_diff_chars=10_000)
 
     result = executor.execute_prompt("add hello.txt")
 
@@ -124,16 +156,7 @@ def test_executor_applies_valid_diff(tmp_path):
 def test_executor_strips_markdown_fence_around_diff(tmp_path):
     git = GitHelper(str(tmp_path))
     git.init_repo()
-    diff = (
-        "diff --git a/hello.txt b/hello.txt\n"
-        "new file mode 100644\n"
-        "index 0000000..e69de29\n"
-        "--- /dev/null\n"
-        "+++ b/hello.txt\n"
-        "@@ -0,0 +1 @@\n"
-        "+hi\n"
-    )
-    fenced = f"```diff\n{diff}```"
+    fenced = f"```diff\n{_VALID_NEW_FILE_DIFF}```"
     executor = LocalExecutorAgent(git, _FakeOpenAI(fenced), model="gpt-4o", max_diff_chars=10_000)
 
     executor.execute_prompt("add hello.txt")
@@ -150,6 +173,17 @@ def test_executor_raises_on_empty_response(tmp_path):
         executor.execute_prompt("do something")
 
 
+def test_executor_uses_cache_key(tmp_path):
+    git = GitHelper(str(tmp_path))
+    git.init_repo()
+    client = _FakeOpenAI(_VALID_NEW_FILE_DIFF)
+    executor = LocalExecutorAgent(git, client, model="gpt-4o", max_diff_chars=10_000)
+
+    executor.execute_prompt("add hello.txt")
+
+    assert client.last_kwargs["prompt_cache_key"] == "amao-execute-prompt"
+
+
 def test_review_code_returns_result_for_approved():
     reviewer = ReviewerAgent(
         _FakeAnthropic('{"status": "APPROVED", "feedback": "looks good"}'),
@@ -160,6 +194,18 @@ def test_review_code_returns_result_for_approved():
 
     assert result.approved
     assert result.feedback == "looks good"
+
+
+def test_review_code_marks_system_prompt_as_cacheable():
+    client = _FakeAnthropic('{"status": "APPROVED", "feedback": "ok"}')
+    reviewer = ReviewerAgent(client, model="claude-3-7-sonnet-20250219")
+
+    reviewer.review_code(_milestone(), "diff --git a/x b/x")
+
+    system = client.last_kwargs["system"]
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+    # Dynamic per-call data must stay in the user message, never in the cached block.
+    assert "Add feature" not in system[0]["text"]
 
 
 def test_review_code_rejects_empty_diff_without_calling_llm():
