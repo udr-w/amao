@@ -3,13 +3,11 @@ from __future__ import annotations
 import logging
 import os
 
-import anthropic
-from openai import OpenAI
-
 from amao.agents import LocalExecutorAgent, PlannerAgent, ReviewerAgent
 from amao.config import config
 from amao.exceptions import RecoverableExecutionError
 from amao.git_helper import GitHelper
+from amao.llm import LLMBackend, build_backend
 from amao.models import Milestone, MilestoneStatus
 from amao.notifier import Notifier
 from amao.state_manager import StateManager
@@ -56,21 +54,25 @@ class Orchestrator:
         self.notifier = notifier or Notifier(config.WEBHOOK_URL)
         self.git = git or GitHelper(self.project_dir)
 
+        def backend_for(role_provider: str, role_model: str) -> LLMBackend:
+            return build_backend(
+                role_provider,
+                role_model,
+                openai_api_key=config.OPENAI_API_KEY,
+                anthropic_api_key=config.ANTHROPIC_API_KEY,
+                timeout=config.REQUEST_TIMEOUT_SECONDS,
+            )
+
         self.planner = planner or PlannerAgent(
-            OpenAI(api_key=config.OPENAI_API_KEY, timeout=config.REQUEST_TIMEOUT_SECONDS),
-            model=config.PLANNER_MODEL,
+            backend_for(config.PLANNER_PROVIDER, config.PLANNER_MODEL)
         )
         self.executor = executor or LocalExecutorAgent(
             self.git,
-            OpenAI(api_key=config.OPENAI_API_KEY, timeout=config.REQUEST_TIMEOUT_SECONDS),
-            model=config.PLANNER_MODEL,
+            backend_for(config.EXECUTOR_PROVIDER, config.EXECUTOR_MODEL),
             max_diff_chars=config.MAX_DIFF_CHARS,
         )
         self.reviewer = reviewer or ReviewerAgent(
-            anthropic.Anthropic(
-                api_key=config.ANTHROPIC_API_KEY, timeout=config.REQUEST_TIMEOUT_SECONDS
-            ),
-            model=config.REVIEWER_MODEL,
+            backend_for(config.REVIEWER_PROVIDER, config.REVIEWER_MODEL)
         )
 
     def run(self) -> None:

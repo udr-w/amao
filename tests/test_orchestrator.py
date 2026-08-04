@@ -4,6 +4,7 @@ import pytest
 
 from amao.config import config
 from amao.exceptions import DiffApplyError, PlanningError
+from amao.llm import AnthropicBackend, OpenAIBackend
 from amao.models import Milestone, MilestoneStatus, ReviewResult
 from amao.orchestrator import Orchestrator
 
@@ -39,6 +40,23 @@ def test_oversized_goal_is_rejected_at_construction(tmp_path, deps):
 
     with pytest.raises(ValueError):
         _make(tmp_path, deps, goal=oversized_goal)
+
+
+def test_default_construction_wires_the_configured_provider_per_role(tmp_path, deps):
+    # Only stub the non-agent collaborators -- let planner/executor/reviewer
+    # build their real default backends, and check the wiring glue picked the
+    # right provider per role (openai/openai/anthropic, matching config's
+    # defaults).
+    del deps["planner"], deps["executor"], deps["reviewer"]
+
+    orch = Orchestrator(project_dir=str(tmp_path), project_goal="build x", **deps)
+
+    assert isinstance(orch.planner.backend, OpenAIBackend)
+    assert isinstance(orch.executor.backend, OpenAIBackend)
+    assert isinstance(orch.reviewer.backend, AnthropicBackend)
+    assert orch.planner.backend.model == config.PLANNER_MODEL
+    assert orch.executor.backend.model == config.EXECUTOR_MODEL
+    assert orch.reviewer.backend.model == config.REVIEWER_MODEL
 
 
 def test_run_plans_once_when_state_is_empty(tmp_path, deps):

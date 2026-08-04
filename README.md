@@ -1,19 +1,80 @@
 # amao — Autonomous Multi-Agent Orchestration Engine
 
-An autonomous agent orchestration framework that executes software projects end-to-end. A Planner
-agent (OpenAI) breaks a goal into milestones, a Local Executor agent turns each milestone into a
-sandboxed unified diff, a Reviewer agent (Anthropic) reviews the resulting `git diff`, and an
-Orchestrator loop drives the whole thing with SQLite-backed state, rate-limit resilience, and
-human-in-the-loop alerting.
+[![CI](https://github.com/udr-w/amao/actions/workflows/ci.yml/badge.svg)](https://github.com/udr-w/amao/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
+**Describe what you want built. amao plans it, writes it, reviews it, and commits it — and only
+interrupts you when it's genuinely stuck.**
+
+A Planner agent breaks your goal into milestones. A Local Executor agent turns each milestone into
+a sandboxed unified diff. A Reviewer agent checks the resulting `git diff` against what was asked
+for. An Orchestrator loop drives all three with persistent state, rate-limit resilience, and
+human-in-the-loop alerting — so you can kick off a build and walk away, not babysit a chat window.
+
+Every one of those three roles is swappable between OpenAI and Anthropic with a single environment
+variable — see [Rewiring the agents](#rewiring-the-agents).
 
 ---
 
-## Project Overview
+## Why this exists
 
-Instead of manually copying prompts and diffs between web UIs and local CLI tools, this engine
-acts as a central coordinator: specialized AI agents talk to each other, manage a local git
-repository, propose code edits as diffs, review them, and notify a human only when genuinely
-stuck.
+Before automating this, the workflow was: paste a plan from one chat window, paste the resulting
+code into another tool, paste the diff into a third tool for review, paste the feedback back into
+the first window, repeat. amao replaces that manual relay with one process that:
+
+* **Never writes files directly from LLM output.** The executor proposes a diff; a dedicated
+  validator is the only thing that ever touches your filesystem, and it actively rejects anything
+  that tries to escape the project directory.
+* **Remembers where it left off.** Kill the process, restart the machine, come back tomorrow —
+  `amao run` on the same directory resumes exactly where it stopped.
+* **Knows when to stop and ask for help.** A milestone that keeps failing review halts and pings
+  you, instead of quietly burning API credits in a loop forever.
+* **Doesn't lock you into one AI vendor.** Point any of the three roles at OpenAI or Anthropic.
+
+---
+
+## Try it on your own idea in under 5 minutes
+
+This isn't limited to the sample task-manager demo shipped in `examples/` — that's just one
+illustration. amao takes **any** natural-language goal. Here's the shape of using it for something
+of your own:
+
+```bash
+# 1. Install
+pip install -e ".[dev]"
+
+# 2. Set at least one provider's key (see "Rewiring the agents" if you only want one vendor)
+export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# 3. Point it at a fresh directory and describe what you want -- in your own words
+amao run --dir ./my-idea --goal "Build a CLI habit tracker in Python: log a habit as done for
+today, show a streak count per habit, and store everything in a local SQLite file. Include a
+--report flag that prints a weekly summary table."
+```
+
+What happens next, with no further input from you:
+
+1. **Planning** — the goal above gets broken into discrete milestones (e.g. "set up CLI arg
+   parsing and SQLite schema", "implement `log` command", "implement streak calculation",
+   "implement `--report`").
+2. **Execution** — each milestone becomes a task prompt, which the executor turns into a real git
+   diff inside `./my-idea`.
+3. **Review** — the diff gets checked against that milestone's spec. Approved diffs get committed
+   (`feat: completed <milestone>`); rejected ones get retried with the reviewer's feedback folded
+   in, up to `MAX_REVIEW_ATTEMPTS` times.
+4. **You get paged only if it's stuck** — a milestone that can't pass review after enough attempts
+   halts and notifies you (stdout always; a webhook too, if configured) with exactly why.
+
+Watch it work with `git log` and `git diff` inside `./my-idea` as it runs, or inspect
+`./my-idea/orchestrator_state.db` for the full per-milestone audit trail. Try a goal that's
+deliberately underspecified and see how the planner interprets it, or one with a strict constraint
+("no external dependencies beyond the standard library") and see the reviewer enforce it. Because
+nothing here is hardcoded to the task-manager example, the interesting part is seeing what it does
+with a goal you actually care about.
+
+---
 
 ## Key Features
 
@@ -21,6 +82,15 @@ stuck.
   a unified diff, which `GitHelper.apply_diff` validates (no absolute paths, no `..` traversal, no
   symlinks, no binary content, size-capped) and applies via `git apply --check` before committing
   to it. This is the single choke point every code change passes through.
+* **Rewireable agents, any provider per role.** Planner, Executor, and Reviewer each talk to an
+  `LLMBackend` interface, not a hardcoded SDK — flip `REVIEWER_PROVIDER=openai` to make GPT the
+  reviewer instead of Claude, or point every role at one vendor. See
+  [Rewiring the agents](#rewiring-the-agents).
+* **Prompt caching, wired in by default.** Static instructions are split from per-call data so
+  OpenAI's automatic prefix caching and Anthropic's explicit `cache_control` breakpoints both have
+  something to cache — cutting redundant token cost and latency on repeated calls (most notably
+  `generate_task_prompt`, invoked once per milestone attempt). See
+  [Prompt caching](#prompt-caching).
 * **Persistent SQLite checkpoints.** Every milestone, audit log entry, and error state is recorded
   in `orchestrator_state.db` inside the target project directory. A crashed or restarted run
   resumes exactly where it left off.
@@ -42,16 +112,17 @@ stuck.
 .
 ├── src/amao/
 │   ├── cli.py             # `amao` console-script entry point
-│   ├── config.py          # Env-driven settings + fail-fast validate()
+│   ├── config.py          # Env-driven settings, per-role provider/model resolution, validate()
 │   ├── exceptions.py       # AmaoError hierarchy (recoverable vs. halting)
+│   ├── llm.py              # LLMBackend abstraction: OpenAIBackend, AnthropicBackend, build_backend()
 │   ├── models.py           # Milestone / ReviewResult / ExecutionResult + MilestoneStatus
 │   ├── state_manager.py    # SQLite persistence for milestones + audit log
 │   ├── rate_limiter.py     # Retry/backoff decorator
 │   ├── notifier.py         # HTTPS webhook alert dispatcher
-│   ├── agents.py           # PlannerAgent, LocalExecutorAgent, ReviewerAgent
+│   ├── agents.py           # PlannerAgent, LocalExecutorAgent, ReviewerAgent (provider-agnostic)
 │   ├── git_helper.py       # Git subprocess wrapper + sandboxed apply_diff
 │   └── orchestrator.py     # Main pipeline loop / state machine
-├── examples/demo_run.py     # Self-contained demo (CLI Task Manager app)
+├── examples/demo_run.py     # Self-contained demo (CLI Task Manager app) -- one example, not the only use
 ├── tests/                   # pytest suite (mocked SDKs, real git in tmp dirs)
 ├── pyproject.toml
 ├── Dockerfile / .dockerignore
@@ -83,11 +154,61 @@ export NOTIFIER_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL" 
 ```
 
 `Config.validate()` is called on every `Orchestrator` construction (CLI, demo, or programmatic
-use) and fails fast with a clear error if a required key is missing.
+use) and fails fast with a clear error if a key required by your chosen providers is missing — see
+below, you don't need *both* keys unless you're using both providers.
 
 Other tunables (all optional, see `.env.example` for defaults): `MAX_REVIEW_ATTEMPTS`,
-`MAX_MILESTONES`, `MAX_DIFF_CHARS`, `MAX_GOAL_CHARS`, `REQUEST_TIMEOUT_SECONDS`, `PLANNER_MODEL`,
-`REVIEWER_MODEL`.
+`MAX_MILESTONES`, `MAX_DIFF_CHARS`, `MAX_GOAL_CHARS`, `REQUEST_TIMEOUT_SECONDS`.
+
+### Rewiring the agents
+
+Planner, Executor, and Reviewer each run against an `LLMBackend` (`src/amao/llm.py`), not a
+hardcoded SDK client. Which provider backs each role is pure config:
+
+| Role | Provider env var | Model env var | Default provider | Default model |
+|---|---|---|---|---|
+| Planner | `PLANNER_PROVIDER` | `PLANNER_MODEL` | `openai` | `gpt-4o` |
+| Executor | `EXECUTOR_PROVIDER` | `EXECUTOR_MODEL` | `openai` | `gpt-4o` |
+| Reviewer | `REVIEWER_PROVIDER` | `REVIEWER_MODEL` | `anthropic` | `claude-3-7-sonnet-20250219` |
+
+Each provider is either `"openai"` or `"anthropic"`. Leave a `*_MODEL` blank and it resolves to
+that provider's default automatically — so switching `REVIEWER_PROVIDER` doesn't leave you
+pointed at the wrong vendor's model name by accident.
+
+**The defaults above are unchanged from amao's original design** — you don't need to set anything
+to get the original OpenAI-plans-and-executes, Anthropic-reviews behavior. Rewiring is opt-in:
+
+```bash
+# Make GPT the reviewer instead of Claude
+export REVIEWER_PROVIDER=openai
+
+# Go all-in on one vendor -- only ANTHROPIC_API_KEY is required in this case
+export PLANNER_PROVIDER=anthropic
+export EXECUTOR_PROVIDER=anthropic
+export REVIEWER_PROVIDER=anthropic
+
+# Use a specific model instead of the provider's default
+export PLANNER_MODEL=gpt-4o-mini
+```
+
+`Config.validate()` only requires the API key for provider(s) actually selected above — rewire
+everything to Anthropic and `OPENAI_API_KEY` can stay blank.
+
+### Prompt caching
+
+Static system instructions are kept separate from per-call data (milestone descriptions, diffs) in
+every agent call, specifically so caching has something stable to key off:
+
+* **OpenAI roles** get automatic prefix caching (no code changes needed on your end) plus a
+  `prompt_cache_key` per call site to improve cache-hit routing.
+* **Anthropic roles** get an explicit `cache_control: {"type": "ephemeral"}` breakpoint on the
+  system prompt.
+
+One honest caveat: Anthropic requires at least 1024 tokens (4096 on some newer model generations)
+in a cache breakpoint before it actually caches anything — below that, it's a no-op, not an error.
+amao's built-in system prompts are short, so this engages automatically and for free the moment
+you (or a future version of this project) grow that prompt further — e.g. a fuller review rubric —
+with zero additional code.
 
 ### Running
 
@@ -114,7 +235,9 @@ of re-planning.
 python examples/demo_run.py
 ```
 
-Builds a sample CLI Task Manager app end-to-end in `./demo_task_manager_app`.
+Builds a sample CLI Task Manager app end-to-end in `./demo_task_manager_app`. This is one example
+goal, not a fixed template — see [Try it on your own idea](#try-it-on-your-own-idea-in-under-5-minutes)
+above for pointing amao at something of your own.
 
 ### Docker
 
@@ -148,18 +271,34 @@ smoke check.
   the sole place changes are applied, and it rejects absolute paths, `..` traversal, symlink modes,
   and binary content before ever calling `git apply` — defense in depth alongside git's own
   path-escape protections (`--unsafe-paths` is never passed).
-- **Size-capped diffs and plans.** `MAX_DIFF_CHARS` caps what's sent to the reviewer (and what the
-  executor may apply); `MAX_MILESTONES` caps the planner's output. Exceeding either halts the run
-  for human review rather than silently truncating.
+* **Size-capped diffs, plans, and goals.** `MAX_DIFF_CHARS` caps what's sent to the reviewer (and
+  what the executor may apply); `MAX_MILESTONES` caps the planner's output; `MAX_GOAL_CHARS` caps
+  the input goal itself. Exceeding any of these halts the run for human review rather than
+  silently truncating.
 * **HTTPS-only webhooks.** `NOTIFIER_WEBHOOK_URL` must use `https://`; both `Config.validate()` and
   `Notifier.__init__` enforce this.
+* **Only the credentials you actually use are required.** `Config.validate()` checks the API
+  key(s) for whichever provider(s) your role config selects — see
+  [Rewiring the agents](#rewiring-the-agents) — not a hardcoded pair.
 * **No secrets in version control.** `.gitignore` excludes `.env`, `*.db`, and generated project
   workspaces; `.env.example` documents the expected variables without real values.
 
+Found a security issue? See [SECURITY.md](./SECURITY.md) for how to report it privately.
+
 ## Extending the System
 
+* **Adding a new LLM provider:** implement `LLMBackend` in `src/amao/llm.py` (one method,
+  `complete(system, user, cache_key, json_mode) -> str`) and wire it into `build_backend()` — every
+  agent role picks it up automatically via config, with no changes to `agents.py`.
 * **Swapping the Local Executor:** replace `LocalExecutorAgent` in `src/amao/agents.py` with a
   wrapper around a real coding CLI (Aider, Cursor CLI, etc.) — it just needs to return a unified
   diff string; `GitHelper.apply_diff` will validate and apply it either way.
 * **Adjusting loop guard limits:** change `MAX_REVIEW_ATTEMPTS` via the environment.
 * **Adding notification providers:** extend `Notifier` in `src/amao/notifier.py`.
+
+## Contributing
+
+Bug reports, feature requests, and pull requests are welcome — see
+[CONTRIBUTING.md](./CONTRIBUTING.md) for how to get set up, and
+[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) for the ground rules. Dependency updates are tracked
+automatically via [Dependabot](./.github/dependabot.yml).

@@ -1,38 +1,31 @@
-from types import SimpleNamespace
-
 import pytest
-from anthropic.types import TextBlock
 
 from amao.agents import LocalExecutorAgent, PlannerAgent, ReviewerAgent, _strip_code_fence
 from amao.exceptions import ExecutionError, PlanningError
 from amao.git_helper import GitHelper
+from amao.llm import LLMBackend
 from amao.models import Milestone, MilestoneStatus
 
 
-class _FakeOpenAI:
-    def __init__(self, content):
-        self._content = content
-        self.last_kwargs = None
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
-
-    def _create(self, **kwargs):
-        self.last_kwargs = kwargs
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=self._content))]
-        )
-
-
-class _FakeAnthropic:
-    """Uses real anthropic.types.TextBlock so review_code's isinstance check passes."""
+class _FakeBackend(LLMBackend):
+    """Records what each agent asks of the backend, decoupled from any
+    specific provider -- agents.py should behave identically regardless of
+    which LLMBackend it's given. Provider-specific request/response shapes
+    are covered separately in test_llm.py.
+    """
 
     def __init__(self, content):
         self._content = content
-        self.last_kwargs = None
-        self.messages = SimpleNamespace(create=self._create)
+        self.last_call = None
 
-    def _create(self, **kwargs):
-        self.last_kwargs = kwargs
-        return SimpleNamespace(content=[TextBlock(type="text", text=self._content)])
+    def complete(self, *, system, user, cache_key, json_mode=False):
+        self.last_call = {
+            "system": system,
+            "user": user,
+            "cache_key": cache_key,
+            "json_mode": json_mode,
+        }
+        return self._content
 
 
 def _milestone(**overrides):
@@ -63,8 +56,8 @@ def test_strip_code_fence_preserves_trailing_newline_needed_by_diffs():
 
 
 def test_plan_project_parses_milestones():
-    client = _FakeOpenAI('{"milestones": [{"title": "A", "description": "do a"}]}')
-    planner = PlannerAgent(client, model="gpt-4o")
+    backend = _FakeBackend('{"milestones": [{"title": "A", "description": "do a"}]}')
+    planner = PlannerAgent(backend)
 
     milestones = planner.plan_project("build a thing", max_milestones=10)
 
@@ -72,61 +65,60 @@ def test_plan_project_parses_milestones():
 
 
 def test_plan_project_raises_on_malformed_json():
-    planner = PlannerAgent(_FakeOpenAI("not json"), model="gpt-4o")
+    planner = PlannerAgent(_FakeBackend("not json"))
 
     with pytest.raises(PlanningError):
         planner.plan_project("build a thing", max_milestones=10)
 
 
 def test_plan_project_raises_on_missing_milestones_key():
-    planner = PlannerAgent(_FakeOpenAI('{"oops": []}'), model="gpt-4o")
+    planner = PlannerAgent(_FakeBackend('{"oops": []}'))
 
     with pytest.raises(PlanningError):
         planner.plan_project("x", max_milestones=10)
 
 
 def test_plan_project_raises_on_malformed_milestone_shape():
-    planner = PlannerAgent(_FakeOpenAI('{"milestones": [{"title": "A"}]}'), model="gpt-4o")
+    planner = PlannerAgent(_FakeBackend('{"milestones": [{"title": "A"}]}'))
 
     with pytest.raises(PlanningError):
         planner.plan_project("x", max_milestones=10)
 
 
+def test_plan_project_uses_static_system_prompt_json_mode_and_cache_key():
+    backend = _FakeBackend('{"milestones": [{"title": "A", "description": "d"}]}')
+    planner = PlannerAgent(backend)
+
+    planner.plan_project("build a thing", max_milestones=10)
+
+    assert "Project Goal" not in backend.last_call["system"]  # static, no per-call data
+    assert "build a thing" in backend.last_call["user"]
+    assert backend.last_call["json_mode"] is True
+    assert backend.last_call["cache_key"] == "amao-plan-project"
+
+
 def test_generate_task_prompt_returns_text():
-    planner = PlannerAgent(_FakeOpenAI("do step 1"), model="gpt-4o")
+    planner = PlannerAgent(_FakeBackend("do step 1"))
 
     assert planner.generate_task_prompt(_milestone()) == "do step 1"
 
 
 def test_generate_task_prompt_raises_on_empty_response():
-    planner = PlannerAgent(_FakeOpenAI(None), model="gpt-4o")
+    planner = PlannerAgent(_FakeBackend(None))
 
     with pytest.raises(PlanningError):
         planner.generate_task_prompt(_milestone())
 
 
-def test_plan_project_uses_static_system_message_and_cache_key():
-    client = _FakeOpenAI('{"milestones": [{"title": "A", "description": "d"}]}')
-    planner = PlannerAgent(client, model="gpt-4o")
-
-    planner.plan_project("build a thing", max_milestones=10)
-
-    messages = client.last_kwargs["messages"]
-    assert messages[0]["role"] == "system"
-    assert "Project Goal" not in messages[0]["content"]  # static, no per-call data
-    assert client.last_kwargs["prompt_cache_key"] == "amao-plan-project"
-
-
-def test_generate_task_prompt_uses_static_system_message_and_cache_key():
-    client = _FakeOpenAI("do step 1")
-    planner = PlannerAgent(client, model="gpt-4o")
+def test_generate_task_prompt_uses_static_system_prompt_and_cache_key():
+    backend = _FakeBackend("do step 1")
+    planner = PlannerAgent(backend)
 
     planner.generate_task_prompt(_milestone())
 
-    messages = client.last_kwargs["messages"]
-    assert messages[0]["role"] == "system"
-    assert "Add feature" not in messages[0]["content"]  # static, no per-call data
-    assert client.last_kwargs["prompt_cache_key"] == "amao-generate-task-prompt"
+    assert "Add feature" not in backend.last_call["system"]  # static, no per-call data
+    assert "Add feature" in backend.last_call["user"]
+    assert backend.last_call["cache_key"] == "amao-generate-task-prompt"
 
 
 _VALID_NEW_FILE_DIFF = (
@@ -143,9 +135,7 @@ _VALID_NEW_FILE_DIFF = (
 def test_executor_applies_valid_diff(tmp_path):
     git = GitHelper(str(tmp_path))
     git.init_repo()
-    executor = LocalExecutorAgent(
-        git, _FakeOpenAI(_VALID_NEW_FILE_DIFF), model="gpt-4o", max_diff_chars=10_000
-    )
+    executor = LocalExecutorAgent(git, _FakeBackend(_VALID_NEW_FILE_DIFF), max_diff_chars=10_000)
 
     result = executor.execute_prompt("add hello.txt")
 
@@ -157,7 +147,7 @@ def test_executor_strips_markdown_fence_around_diff(tmp_path):
     git = GitHelper(str(tmp_path))
     git.init_repo()
     fenced = f"```diff\n{_VALID_NEW_FILE_DIFF}```"
-    executor = LocalExecutorAgent(git, _FakeOpenAI(fenced), model="gpt-4o", max_diff_chars=10_000)
+    executor = LocalExecutorAgent(git, _FakeBackend(fenced), max_diff_chars=10_000)
 
     executor.execute_prompt("add hello.txt")
 
@@ -167,7 +157,7 @@ def test_executor_strips_markdown_fence_around_diff(tmp_path):
 def test_executor_raises_on_empty_response(tmp_path):
     git = GitHelper(str(tmp_path))
     git.init_repo()
-    executor = LocalExecutorAgent(git, _FakeOpenAI(None), model="gpt-4o", max_diff_chars=10_000)
+    executor = LocalExecutorAgent(git, _FakeBackend(None), max_diff_chars=10_000)
 
     with pytest.raises(ExecutionError):
         executor.execute_prompt("do something")
@@ -176,19 +166,17 @@ def test_executor_raises_on_empty_response(tmp_path):
 def test_executor_uses_cache_key(tmp_path):
     git = GitHelper(str(tmp_path))
     git.init_repo()
-    client = _FakeOpenAI(_VALID_NEW_FILE_DIFF)
-    executor = LocalExecutorAgent(git, client, model="gpt-4o", max_diff_chars=10_000)
+    backend = _FakeBackend(_VALID_NEW_FILE_DIFF)
+    executor = LocalExecutorAgent(git, backend, max_diff_chars=10_000)
 
     executor.execute_prompt("add hello.txt")
 
-    assert client.last_kwargs["prompt_cache_key"] == "amao-execute-prompt"
+    assert backend.last_call["cache_key"] == "amao-execute-prompt"
+    assert backend.last_call["json_mode"] is False
 
 
 def test_review_code_returns_result_for_approved():
-    reviewer = ReviewerAgent(
-        _FakeAnthropic('{"status": "APPROVED", "feedback": "looks good"}'),
-        model="claude-3-7-sonnet-20250219",
-    )
+    reviewer = ReviewerAgent(_FakeBackend('{"status": "APPROVED", "feedback": "looks good"}'))
 
     result = reviewer.review_code(_milestone(), "diff --git a/x b/x")
 
@@ -196,39 +184,38 @@ def test_review_code_returns_result_for_approved():
     assert result.feedback == "looks good"
 
 
-def test_review_code_marks_system_prompt_as_cacheable():
-    client = _FakeAnthropic('{"status": "APPROVED", "feedback": "ok"}')
-    reviewer = ReviewerAgent(client, model="claude-3-7-sonnet-20250219")
+def test_review_code_uses_static_system_prompt_json_mode_and_cache_key():
+    backend = _FakeBackend('{"status": "APPROVED", "feedback": "ok"}')
+    reviewer = ReviewerAgent(backend)
 
     reviewer.review_code(_milestone(), "diff --git a/x b/x")
 
-    system = client.last_kwargs["system"]
-    assert system[0]["cache_control"] == {"type": "ephemeral"}
-    # Dynamic per-call data must stay in the user message, never in the cached block.
-    assert "Add feature" not in system[0]["text"]
+    # Dynamic per-call data must stay in the user message, never in the cached system block.
+    assert "Add feature" not in backend.last_call["system"]
+    assert "Add feature" in backend.last_call["user"]
+    assert backend.last_call["json_mode"] is True
+    assert backend.last_call["cache_key"] == "amao-review-code"
 
 
 def test_review_code_rejects_empty_diff_without_calling_llm():
-    reviewer = ReviewerAgent(
-        _FakeAnthropic("should not be used"), model="claude-3-7-sonnet-20250219"
-    )
+    backend = _FakeBackend("should not be used")
+    reviewer = ReviewerAgent(backend)
 
     result = reviewer.review_code(_milestone(), "   ")
 
     assert not result.approved
+    assert backend.last_call is None
 
 
 def test_review_code_raises_on_malformed_json():
-    reviewer = ReviewerAgent(_FakeAnthropic("not json"), model="claude-3-7-sonnet-20250219")
+    reviewer = ReviewerAgent(_FakeBackend("not json"))
 
     with pytest.raises(ExecutionError):
         reviewer.review_code(_milestone(), "diff --git a/x b/x")
 
 
 def test_review_code_raises_on_unexpected_status():
-    reviewer = ReviewerAgent(
-        _FakeAnthropic('{"status": "MAYBE", "feedback": "??"}'), model="claude-3-7-sonnet-20250219"
-    )
+    reviewer = ReviewerAgent(_FakeBackend('{"status": "MAYBE", "feedback": "??"}'))
 
     with pytest.raises(ExecutionError):
         reviewer.review_code(_milestone(), "diff --git a/x b/x")

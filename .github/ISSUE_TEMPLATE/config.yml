@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/udr-w/amao/security
+    about: Please report vulnerabilities privately via GitHub Security Advisories, not a public issue -- see SECURITY.md.
+  - name: Questions & discussion
+    url: https://github.com/udr-w/amao/issues
+    about: For general questions, open an issue with a clear title -- there's no separate discussion forum yet.
