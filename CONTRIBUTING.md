@@ -51,10 +51,32 @@ project-wide.
 
 ## Adding a new LLM provider
 
-`src/amao/llm.py` is the extension point: implement `LLMBackend` (one method,
-`complete(system, user, cache_key, json_mode) -> str`), wire it into `build_backend()`, and add it
-to `DEFAULT_MODELS_BY_PROVIDER`. No changes to `agents.py` or `orchestrator.py` should be needed —
-if they are, that's a sign the abstraction leaked and is itself worth fixing.
+`src/amao/llm.py` is the extension point. Most providers worth adding expose an
+OpenAI-Chat-Completions-compatible endpoint (DeepSeek, Moonshot, xAI, and Gemini all do, alongside
+OpenAI itself) — for those, adding support is one entry in the `PROVIDERS` registry:
+
+```python
+"some_provider": ProviderSpec(
+    default_model="...",
+    api_key_env="SOME_PROVIDER_API_KEY",
+    kind="openai",
+    base_url="https://api.some-provider.example/v1",
+),
+```
+
+Then add a matching `SOME_PROVIDER_API_KEY` field to `Config` in `config.py` (the field name must
+match `api_key_env` exactly — `Config.api_keys()` looks it up via `getattr`). `build_backend()`
+picks up any `kind="openai"` entry automatically via `OpenAIBackend`.
+
+For a genuinely different wire format (not OpenAI-compatible), implement `LLMBackend` directly
+(one method: `complete(system, user, cache_key, json_mode) -> str`), add a `kind` for it, and
+branch on that kind in `build_backend()` the same way the existing `"anthropic"` kind does.
+
+No changes to `agents.py` or `orchestrator.py` should be needed either way — if they are, that's a
+sign the abstraction leaked and is itself worth fixing.
+
+Model names for third-party providers move fast — double check the provider's current docs before
+picking a `default_model`, and mention in your PR when you last verified it resolves.
 
 ## Pull requests
 

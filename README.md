@@ -12,8 +12,9 @@ a sandboxed unified diff. A Reviewer agent checks the resulting `git diff` again
 for. An Orchestrator loop drives all three with persistent state, rate-limit resilience, and
 human-in-the-loop alerting — so you can kick off a build and walk away, not babysit a chat window.
 
-Every one of those three roles is swappable between OpenAI and Anthropic with a single environment
-variable — see [Rewiring the agents](#rewiring-the-agents).
+Every one of those three roles is swappable between six providers (OpenAI, Anthropic, DeepSeek,
+Moonshot/Kimi, xAI/Grok, Gemini) with a single environment variable — see
+[Rewiring the agents](#rewiring-the-agents).
 
 ---
 
@@ -30,7 +31,8 @@ the first window, repeat. amao replaces that manual relay with one process that:
   `amao run` on the same directory resumes exactly where it stopped.
 * **Knows when to stop and ask for help.** A milestone that keeps failing review halts and pings
   you, instead of quietly burning API credits in a loop forever.
-* **Doesn't lock you into one AI vendor.** Point any of the three roles at OpenAI or Anthropic.
+* **Doesn't lock you into one AI vendor.** Point any of the three roles at OpenAI, Anthropic,
+  DeepSeek, Moonshot (Kimi), xAI (Grok), or Gemini — mix and match per role.
 
 ---
 
@@ -82,10 +84,10 @@ with a goal you actually care about.
   a unified diff, which `GitHelper.apply_diff` validates (no absolute paths, no `..` traversal, no
   symlinks, no binary content, size-capped) and applies via `git apply --check` before committing
   to it. This is the single choke point every code change passes through.
-* **Rewireable agents, any provider per role.** Planner, Executor, and Reviewer each talk to an
-  `LLMBackend` interface, not a hardcoded SDK — flip `REVIEWER_PROVIDER=openai` to make GPT the
-  reviewer instead of Claude, or point every role at one vendor. See
-  [Rewiring the agents](#rewiring-the-agents).
+* **Rewireable agents, six providers to pick from.** Planner, Executor, and Reviewer each talk to
+  an `LLMBackend` interface, not a hardcoded SDK — flip `REVIEWER_PROVIDER=openai` to make GPT the
+  reviewer instead of Claude, try `moonshot` (Kimi) or `deepseek` as the executor, or point every
+  role at one vendor. See [Rewiring the agents](#rewiring-the-agents).
 * **Prompt caching, wired in by default.** Static instructions are split from per-call data so
   OpenAI's automatic prefix caching and Anthropic's explicit `cache_control` breakpoints both have
   something to cache — cutting redundant token cost and latency on repeated calls (most notably
@@ -154,8 +156,9 @@ export NOTIFIER_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL" 
 ```
 
 `Config.validate()` is called on every `Orchestrator` construction (CLI, demo, or programmatic
-use) and fails fast with a clear error if a key required by your chosen providers is missing — see
-below, you don't need *both* keys unless you're using both providers.
+use) and fails fast with a clear error if a key required by your chosen providers is missing —
+see [Rewiring the agents](#rewiring-the-agents) below, you only need the key(s) for the
+provider(s) you actually select.
 
 Other tunables (all optional, see `.env.example` for defaults): `MAX_REVIEW_ATTEMPTS`,
 `MAX_MILESTONES`, `MAX_DIFF_CHARS`, `MAX_GOAL_CHARS`, `REQUEST_TIMEOUT_SECONDS`.
@@ -171,9 +174,25 @@ hardcoded SDK client. Which provider backs each role is pure config:
 | Executor | `EXECUTOR_PROVIDER` | `EXECUTOR_MODEL` | `openai` | `gpt-4o` |
 | Reviewer | `REVIEWER_PROVIDER` | `REVIEWER_MODEL` | `anthropic` | `claude-3-7-sonnet-20250219` |
 
-Each provider is either `"openai"` or `"anthropic"`. Leave a `*_MODEL` blank and it resolves to
-that provider's default automatically — so switching `REVIEWER_PROVIDER` doesn't leave you
-pointed at the wrong vendor's model name by accident.
+Each provider env var accepts any of:
+
+| Provider | API key env var | Default model | Notes |
+|---|---|---|---|
+| `openai` | `OPENAI_API_KEY` | `gpt-4o` | Native OpenAI endpoint |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-7-sonnet-20250219` | Native Anthropic endpoint |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` | OpenAI-compatible |
+| `moonshot` | `MOONSHOT_API_KEY` | `kimi-k3` | OpenAI-compatible (Kimi) |
+| `xai` | `XAI_API_KEY` | `grok-4.3` | OpenAI-compatible (Grok) |
+| `gemini` | `GEMINI_API_KEY` | `gemini-3.5-flash` | OpenAI-compatible |
+
+DeepSeek, Moonshot, xAI, and Gemini are all reached through the same `OpenAIBackend` — each just
+exposes an OpenAI-Chat-Completions-compatible endpoint, so plugging one in is a `base_url` swap,
+not a new SDK. **Model names for these move fast** (DeepSeek deprecated its old `deepseek-chat` /
+`deepseek-reasoner` names in favor of versioned ones in July 2026, for example) — if a default
+here 404s, check that provider's current docs and override it with the matching `*_MODEL` env var.
+
+Leave a `*_MODEL` blank and it resolves to that provider's default automatically — so switching
+`REVIEWER_PROVIDER` doesn't leave you pointed at the wrong vendor's model name by accident.
 
 **The defaults above are unchanged from amao's original design** — you don't need to set anything
 to get the original OpenAI-plans-and-executes, Anthropic-reviews behavior. Rewiring is opt-in:
@@ -182,33 +201,44 @@ to get the original OpenAI-plans-and-executes, Anthropic-reviews behavior. Rewir
 # Make GPT the reviewer instead of Claude
 export REVIEWER_PROVIDER=openai
 
-# Go all-in on one vendor -- only ANTHROPIC_API_KEY is required in this case
-export PLANNER_PROVIDER=anthropic
-export EXECUTOR_PROVIDER=anthropic
-export REVIEWER_PROVIDER=anthropic
+# Try Kimi K3 as the executor
+export EXECUTOR_PROVIDER=moonshot
+export MOONSHOT_API_KEY="sk-..."
+
+# Go all-in on one vendor -- only DEEPSEEK_API_KEY is required in this case
+export PLANNER_PROVIDER=deepseek
+export EXECUTOR_PROVIDER=deepseek
+export REVIEWER_PROVIDER=deepseek
 
 # Use a specific model instead of the provider's default
 export PLANNER_MODEL=gpt-4o-mini
 ```
 
 `Config.validate()` only requires the API key for provider(s) actually selected above — rewire
-everything to Anthropic and `OPENAI_API_KEY` can stay blank.
+everything to one vendor and every other `*_API_KEY` can stay blank.
+
+**Adding another provider** is one registry entry in `src/amao/llm.py` if it's OpenAI-compatible
+(most are) — see [CONTRIBUTING.md](./CONTRIBUTING.md#adding-a-new-llm-provider).
 
 ### Prompt caching
 
 Static system instructions are kept separate from per-call data (milestone descriptions, diffs) in
 every agent call, specifically so caching has something stable to key off:
 
-* **OpenAI roles** get automatic prefix caching (no code changes needed on your end) plus a
-  `prompt_cache_key` per call site to improve cache-hit routing.
-* **Anthropic roles** get an explicit `cache_control: {"type": "ephemeral"}` breakpoint on the
-  system prompt.
+* **The native OpenAI role(s)** get automatic prefix caching (no code changes needed on your end)
+  plus a `prompt_cache_key` per call site to improve cache-hit routing.
+* **The native Anthropic role(s)** get an explicit `cache_control: {"type": "ephemeral"}`
+  breakpoint on the system prompt.
+* **OpenAI-compatible third-party providers** (DeepSeek, Moonshot, xAI, Gemini) don't get
+  `prompt_cache_key` — it's an OpenAI-specific routing hint, not part of the common wire format
+  these providers implement, so amao doesn't send it to them. Whether *they* cache your requests
+  at all is up to their own infrastructure, not something amao controls either way.
 
-One honest caveat: Anthropic requires at least 1024 tokens (4096 on some newer model generations)
-in a cache breakpoint before it actually caches anything — below that, it's a no-op, not an error.
-amao's built-in system prompts are short, so this engages automatically and for free the moment
-you (or a future version of this project) grow that prompt further — e.g. a fuller review rubric —
-with zero additional code.
+One honest caveat on the Anthropic side: it requires at least 1024 tokens (4096 on some newer
+model generations) in a cache breakpoint before it actually caches anything — below that, it's a
+no-op, not an error. amao's built-in system prompts are short, so this engages automatically and
+for free the moment you (or a future version of this project) grow that prompt further — e.g. a
+fuller review rubric — with zero additional code.
 
 ### Running
 

@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 
 from amao.exceptions import ConfigError
-from amao.llm import DEFAULT_MODELS_BY_PROVIDER
+from amao.llm import PROVIDERS
 
 _ROLES = ("PLANNER", "EXECUTOR", "REVIEWER")
 
@@ -13,6 +13,10 @@ _ROLES = ("PLANNER", "EXECUTOR", "REVIEWER")
 class Config:
     OPENAI_API_KEY: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     ANTHROPIC_API_KEY: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    DEEPSEEK_API_KEY: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
+    MOONSHOT_API_KEY: str = field(default_factory=lambda: os.getenv("MOONSHOT_API_KEY", ""))
+    XAI_API_KEY: str = field(default_factory=lambda: os.getenv("XAI_API_KEY", ""))
+    GEMINI_API_KEY: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     WEBHOOK_URL: str = field(default_factory=lambda: os.getenv("NOTIFIER_WEBHOOK_URL", ""))
 
     MAX_REVIEW_ATTEMPTS: int = field(
@@ -27,10 +31,11 @@ class Config:
 
     DB_FILENAME: str = "orchestrator_state.db"
 
-    # Which provider powers each agent role. Defaults reproduce amao's
-    # original wiring (OpenAI plans + executes, Anthropic reviews) -- set
-    # any of these to "openai" or "anthropic" to rewire the pipeline, e.g.
-    # REVIEWER_PROVIDER=openai to make GPT the reviewer instead of Claude.
+    # Which provider powers each agent role -- any key in amao.llm.PROVIDERS
+    # ("openai", "anthropic", "deepseek", "moonshot", "xai", "gemini").
+    # Defaults reproduce amao's original wiring (OpenAI plans + executes,
+    # Anthropic reviews) -- e.g. set REVIEWER_PROVIDER=deepseek to make
+    # DeepSeek the reviewer instead of Claude.
     PLANNER_PROVIDER: str = field(default_factory=lambda: os.getenv("PLANNER_PROVIDER", "openai"))
     EXECUTOR_PROVIDER: str = field(default_factory=lambda: os.getenv("EXECUTOR_PROVIDER", "openai"))
     REVIEWER_PROVIDER: str = field(
@@ -47,8 +52,12 @@ class Config:
         for role in _ROLES:
             model_field, provider_field = f"{role}_MODEL", f"{role}_PROVIDER"
             if not getattr(self, model_field):
-                provider = getattr(self, provider_field)
-                object.__setattr__(self, model_field, DEFAULT_MODELS_BY_PROVIDER.get(provider, ""))
+                spec = PROVIDERS.get(getattr(self, provider_field))
+                object.__setattr__(self, model_field, spec.default_model if spec else "")
+
+    def api_keys(self) -> dict[str, str]:
+        """Provider name -> API key, for amao.llm.build_backend()."""
+        return {name: getattr(self, spec.api_key_env) for name, spec in PROVIDERS.items()}
 
     def validate(self) -> None:
         """Fail fast when required secrets/config are missing.
@@ -57,21 +66,22 @@ class Config:
         point) so any programmatic use of this library is protected too.
         Only requires the API key(s) actually needed by the providers
         selected for each role -- rewiring every role to one provider
-        shouldn't require an unused key for the other.
+        shouldn't require an unused key for another.
         """
         providers = {self.PLANNER_PROVIDER, self.EXECUTOR_PROVIDER, self.REVIEWER_PROVIDER}
-        unknown = providers - set(DEFAULT_MODELS_BY_PROVIDER)
+        unknown = providers - set(PROVIDERS)
         if unknown:
             raise ConfigError(
-                f"Unknown provider(s) {sorted(unknown)}; expected one of "
-                f"{sorted(DEFAULT_MODELS_BY_PROVIDER)}"
+                f"Unknown provider(s) {sorted(unknown)}; expected one of {sorted(PROVIDERS)}"
             )
 
-        missing = []
-        if "openai" in providers and not self.OPENAI_API_KEY:
-            missing.append("OPENAI_API_KEY")
-        if "anthropic" in providers and not self.ANTHROPIC_API_KEY:
-            missing.append("ANTHROPIC_API_KEY")
+        missing = sorted(
+            {
+                PROVIDERS[p].api_key_env
+                for p in providers
+                if not getattr(self, PROVIDERS[p].api_key_env)
+            }
+        )
         if missing:
             raise ConfigError("Missing required environment variable(s): " + ", ".join(missing))
 

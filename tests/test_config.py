@@ -85,3 +85,58 @@ def test_validate_still_requires_openai_key_if_any_role_uses_it():
 
     with pytest.raises(ConfigError):
         cfg.validate()
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_model"),
+    [
+        ("deepseek", "deepseek-v4-flash"),
+        ("moonshot", "kimi-k3"),
+        ("xai", "grok-4.3"),
+        ("gemini", "gemini-3.5-flash"),
+    ],
+)
+def test_rewiring_to_a_new_provider_resolves_its_default_model(provider, expected_model):
+    cfg = Config(REVIEWER_PROVIDER=provider, **{f"{provider.upper()}_API_KEY": "k"})
+
+    assert cfg.REVIEWER_MODEL == expected_model
+
+
+def test_validate_only_requires_the_new_providers_key_when_rewired():
+    cfg = Config(
+        OPENAI_API_KEY="",
+        ANTHROPIC_API_KEY="",
+        DEEPSEEK_API_KEY="d",
+        PLANNER_PROVIDER="deepseek",
+        EXECUTOR_PROVIDER="deepseek",
+        REVIEWER_PROVIDER="deepseek",
+    )
+
+    cfg.validate()  # must not raise: neither OpenAI nor Anthropic is in use
+
+
+def test_validate_reports_the_new_providers_missing_key():
+    cfg = Config(REVIEWER_PROVIDER="moonshot", MOONSHOT_API_KEY="")
+
+    with pytest.raises(ConfigError, match="MOONSHOT_API_KEY"):
+        cfg.validate()
+
+
+def test_api_keys_maps_every_provider_to_its_configured_key():
+    cfg = Config(
+        OPENAI_API_KEY="o",
+        ANTHROPIC_API_KEY="a",
+        DEEPSEEK_API_KEY="d",
+        MOONSHOT_API_KEY="m",
+        XAI_API_KEY="x",
+        GEMINI_API_KEY="g",
+    )
+
+    assert cfg.api_keys() == {
+        "openai": "o",
+        "anthropic": "a",
+        "deepseek": "d",
+        "moonshot": "m",
+        "xai": "x",
+        "gemini": "g",
+    }

@@ -54,12 +54,13 @@ class Orchestrator:
         self.notifier = notifier or Notifier(config.WEBHOOK_URL)
         self.git = git or GitHelper(self.project_dir)
 
+        api_keys = config.api_keys()
+
         def backend_for(role_provider: str, role_model: str) -> LLMBackend:
             return build_backend(
                 role_provider,
                 role_model,
-                openai_api_key=config.OPENAI_API_KEY,
-                anthropic_api_key=config.ANTHROPIC_API_KEY,
+                api_keys=api_keys,
                 timeout=config.REQUEST_TIMEOUT_SECONDS,
             )
 
