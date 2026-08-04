@@ -26,3 +26,8 @@ htmlcov/
 *.db-shm
 demo_task_manager_app/
 workspace/
+
+# Compiled native extensions (native/) -- build artifacts, never committed;
+# see NATIVE_EXTENSIONS.md for the build scripts that produce these.
+native/**/*.so
+native/**/*.o

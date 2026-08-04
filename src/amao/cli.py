@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 
+from amao._native_duration import format_duration_native
 from amao.config import config
 from amao.exceptions import ConfigError
 from amao.orchestrator import Orchestrator
@@ -26,6 +27,13 @@ def _db_path(directory: str) -> str:
 
 
 def _format_duration(seconds: float) -> str:
+    native_result = format_duration_native(seconds)
+    if native_result is not None:
+        return native_result
+    return _format_duration_python(seconds)
+
+
+def _format_duration_python(seconds: float) -> str:
     total = int(round(seconds))
     hours, remainder = divmod(total, 3600)
     minutes, secs = divmod(remainder, 60)

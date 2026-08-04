@@ -31,6 +31,13 @@ dev = [
     "mypy>=1.10",
     "types-requests>=2.31",
 ]
+# Only needed to BUILD the optional native/ extensions (see
+# NATIVE_EXTENSIONS.md) -- amao runs fine without this group installed or
+# without native/*/build.sh ever having been run; every native call site
+# falls back to a pure-Python implementation automatically.
+native = [
+    "pybind11>=2.11",
+]
 
 [project.scripts]
 amao = "amao.cli:main"

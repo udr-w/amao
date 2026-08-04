@@ -7,6 +7,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
+from amao._native_progress_stats import MilestoneRow as _NativeMilestoneRow
+from amao._native_progress_stats import compute_progress_stats as _native_compute_progress_stats
 from amao.models import Milestone, MilestoneStatus, ProgressSummary
 
 
@@ -215,26 +217,71 @@ class StateManager:
                 "FROM milestones ORDER BY id ASC"
             ).fetchall()
 
-        total = len(rows)
-        pending = sum(1 for r in rows if r["status"] == MilestoneStatus.PENDING.value)
-        in_progress = sum(1 for r in rows if r["status"] == MilestoneStatus.IN_PROGRESS.value)
-        completed = sum(1 for r in rows if r["status"] == MilestoneStatus.COMPLETED.value)
-        halted = sum(1 for r in rows if r["status"] == MilestoneStatus.HALTED.value)
+        # Timestamp parsing stays in Python either way -- nothing to gain
+        # moving strptime into C++. Only the counting/averaging below has a
+        # native alternative; see NATIVE_EXTENSIONS.md.
+        parsed = []
+        for r in rows:
+            has_duration = r["started_at"] is not None and r["completed_at"] is not None
+            duration_seconds = 0.0
+            if has_duration:
+                started = datetime.strptime(r["started_at"], "%Y-%m-%d %H:%M:%S")
+                finished = datetime.strptime(r["completed_at"], "%Y-%m-%d %H:%M:%S")
+                duration_seconds = (finished - started).total_seconds()
+            parsed.append((r["status"], r["title"], r["attempts"], has_duration, duration_seconds))
+
+        if _native_compute_progress_stats is not None:
+            return self._aggregate_progress_native(parsed)
+        return self._aggregate_progress_python(parsed)
+
+    @staticmethod
+    def _aggregate_progress_native(
+        parsed: list[tuple[str, str, int, bool, float]],
+    ) -> ProgressSummary:
+        native_rows = [
+            _NativeMilestoneRow(
+                status=status,
+                title=title,
+                attempts=attempts,
+                has_duration=has_duration,
+                duration_seconds=duration_seconds,
+            )
+            for status, title, attempts, has_duration, duration_seconds in parsed
+        ]
+        stats = _native_compute_progress_stats(native_rows)
+        return ProgressSummary(
+            total=stats.total,
+            pending=stats.pending,
+            in_progress=stats.in_progress,
+            completed=stats.completed,
+            halted=stats.halted,
+            current_milestone_title=stats.current_milestone_title,
+            current_milestone_attempts=stats.current_milestone_attempts,
+            average_completed_seconds=stats.average_completed_seconds,
+            estimated_remaining_seconds=stats.estimated_remaining_seconds,
+        )
+
+    @staticmethod
+    def _aggregate_progress_python(
+        parsed: list[tuple[str, str, int, bool, float]],
+    ) -> ProgressSummary:
+        total = len(parsed)
+        pending = sum(1 for status, *_ in parsed if status == MilestoneStatus.PENDING.value)
+        in_progress = sum(1 for status, *_ in parsed if status == MilestoneStatus.IN_PROGRESS.value)
+        completed = sum(1 for status, *_ in parsed if status == MilestoneStatus.COMPLETED.value)
+        halted = sum(1 for status, *_ in parsed if status == MilestoneStatus.HALTED.value)
 
         current_milestone_title: str | None = None
         current_milestone_attempts = 0
-        for r in rows:
-            if r["status"] == MilestoneStatus.IN_PROGRESS.value:
-                current_milestone_title = r["title"]
-                current_milestone_attempts = r["attempts"]
+        for status, title, attempts, _has_duration, _duration_seconds in parsed:
+            if status == MilestoneStatus.IN_PROGRESS.value:
+                current_milestone_title = title
+                current_milestone_attempts = attempts
                 break
 
-        durations = []
-        for r in rows:
-            if r["started_at"] is not None and r["completed_at"] is not None:
-                started = datetime.strptime(r["started_at"], "%Y-%m-%d %H:%M:%S")
-                finished = datetime.strptime(r["completed_at"], "%Y-%m-%d %H:%M:%S")
-                durations.append((finished - started).total_seconds())
+        durations = [
+            duration_seconds for _, _, _, has_duration, duration_seconds in parsed if has_duration
+        ]
 
         average_completed_seconds = sum(durations) / len(durations) if durations else None
         estimated_remaining_seconds = (

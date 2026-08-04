@@ -546,6 +546,11 @@ Scoped-but-not-started work (a web dashboard, per-subtask model tiering, and oth
 is tracked in [`NEXT_MILESTONES.md`](./NEXT_MILESTONES.md) — read it before starting any of those
 rather than re-deriving the design from scratch.
 
+An optional, self-contained exploration of calling C/C++ from Python (ctypes and pybind11, with
+honest benchmark numbers — including two cases where "native" turned out *not* to be faster) lives
+in [`NATIVE_EXTENSIONS.md`](./NATIVE_EXTENSIONS.md) / `native/`. Nothing in amao depends on it —
+every call site falls back to pure Python automatically.
+
 ## Contributing
 
 Bug reports, feature requests, and pull requests are welcome — see

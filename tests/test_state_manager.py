@@ -1,5 +1,13 @@
+import random
+
+import pytest
+
+import amao.state_manager as state_manager_module
+from amao._native_progress_stats import compute_progress_stats as _native_compute_progress_stats
 from amao.models import MilestoneStatus
 from amao.state_manager import StateManager
+
+_NATIVE_AVAILABLE = _native_compute_progress_stats is not None
 
 
 def _sm(tmp_path, name="state.db"):
@@ -374,3 +382,70 @@ def test_progress_summary_halted_milestone_counts_toward_total_not_estimate(tmp_
     assert summary.pending == 0
     assert summary.in_progress == 0
     assert summary.estimated_remaining_seconds == 0.0
+
+
+def test_progress_summary_falls_back_to_python_when_native_unavailable(tmp_path, monkeypatch):
+    # Forces the pure-Python aggregation path regardless of whether the
+    # native/progress_stats extension happens to be built in this
+    # environment -- CI never builds it, so this is what CI always runs,
+    # but a local dev machine with the extension built would otherwise
+    # never exercise this path via the public method.
+    monkeypatch.setattr(state_manager_module, "_native_compute_progress_stats", None)
+    sm = _sm(tmp_path)
+    sm.create_milestones([{"title": "A", "description": "d"}, {"title": "B", "description": "d"}])
+    a = sm.get_next_pending_milestone()
+    sm.update_milestone_status(a.id, MilestoneStatus.IN_PROGRESS)
+
+    summary = sm.get_progress_summary()
+
+    assert summary.total == 2
+    assert summary.in_progress == 1
+    assert summary.current_milestone_title == "A"
+
+
+@pytest.mark.skipif(
+    not _NATIVE_AVAILABLE,
+    reason="native/progress_stats extension not built -- see NATIVE_EXTENSIONS.md",
+)
+def test_native_and_python_aggregation_agree_on_random_inputs():
+    # Differential test: the native (pybind11/C++) and pure-Python
+    # aggregation paths must agree on every field, across many randomly
+    # generated synthetic milestone lists -- this is the actual proof that
+    # swapping to the native path doesn't change behavior, not just an
+    # assumption.
+    statuses = ["PENDING", "IN_PROGRESS", "COMPLETED", "HALTED"]
+    rng = random.Random(42)
+
+    for _ in range(200):
+        n = rng.randint(0, 15)
+        parsed = []
+        for i in range(n):
+            status = rng.choice(statuses)
+            has_duration = rng.random() < 0.5
+            duration = rng.uniform(0, 10_000) if has_duration else 0.0
+            parsed.append((status, f"milestone-{i}", rng.randint(0, 5), has_duration, duration))
+
+        python_result = StateManager._aggregate_progress_python(parsed)
+        native_result = StateManager._aggregate_progress_native(parsed)
+
+        assert python_result.total == native_result.total
+        assert python_result.pending == native_result.pending
+        assert python_result.in_progress == native_result.in_progress
+        assert python_result.completed == native_result.completed
+        assert python_result.halted == native_result.halted
+        assert python_result.current_milestone_title == native_result.current_milestone_title
+        assert python_result.current_milestone_attempts == native_result.current_milestone_attempts
+        if python_result.average_completed_seconds is None:
+            assert native_result.average_completed_seconds is None
+        else:
+            assert native_result.average_completed_seconds is not None
+            assert python_result.average_completed_seconds == pytest.approx(
+                native_result.average_completed_seconds
+            )
+        if python_result.estimated_remaining_seconds is None:
+            assert native_result.estimated_remaining_seconds is None
+        else:
+            assert native_result.estimated_remaining_seconds is not None
+            assert python_result.estimated_remaining_seconds == pytest.approx(
+                native_result.estimated_remaining_seconds
+            )
