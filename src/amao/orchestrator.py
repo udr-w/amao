@@ -42,6 +42,11 @@ class Orchestrator:
         git: GitHelper | None = None,
     ) -> None:
         config.validate()
+        if len(project_goal) > config.MAX_GOAL_CHARS:
+            raise ValueError(
+                f"project_goal is {len(project_goal)} chars, exceeding the "
+                f"configured limit of {config.MAX_GOAL_CHARS}"
+            )
 
         self.project_dir = os.path.abspath(project_dir)
         self.project_goal = project_goal

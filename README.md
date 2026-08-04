@@ -86,7 +86,8 @@ export NOTIFIER_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL" 
 use) and fails fast with a clear error if a required key is missing.
 
 Other tunables (all optional, see `.env.example` for defaults): `MAX_REVIEW_ATTEMPTS`,
-`MAX_MILESTONES`, `MAX_DIFF_CHARS`, `REQUEST_TIMEOUT_SECONDS`, `PLANNER_MODEL`, `REVIEWER_MODEL`.
+`MAX_MILESTONES`, `MAX_DIFF_CHARS`, `MAX_GOAL_CHARS`, `REQUEST_TIMEOUT_SECONDS`, `PLANNER_MODEL`,
+`REVIEWER_MODEL`.
 
 ### Running
 

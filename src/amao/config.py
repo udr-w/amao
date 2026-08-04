@@ -17,6 +17,7 @@ class Config:
     )
     MAX_MILESTONES: int = field(default_factory=lambda: int(os.getenv("MAX_MILESTONES", "50")))
     MAX_DIFF_CHARS: int = field(default_factory=lambda: int(os.getenv("MAX_DIFF_CHARS", "100000")))
+    MAX_GOAL_CHARS: int = field(default_factory=lambda: int(os.getenv("MAX_GOAL_CHARS", "10000")))
     REQUEST_TIMEOUT_SECONDS: float = field(
         default_factory=lambda: float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
     )

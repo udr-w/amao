@@ -34,6 +34,13 @@ def _last_notify_call(deps):
     return deps["notifier"].notify.call_args_list[-1]
 
 
+def test_oversized_goal_is_rejected_at_construction(tmp_path, deps):
+    oversized_goal = "x" * (config.MAX_GOAL_CHARS + 1)
+
+    with pytest.raises(ValueError):
+        _make(tmp_path, deps, goal=oversized_goal)
+
+
 def test_run_plans_once_when_state_is_empty(tmp_path, deps):
     deps["state"].count_milestones.return_value = 0
     deps["planner"].plan_project.return_value = [{"title": "A", "description": "d"}]
